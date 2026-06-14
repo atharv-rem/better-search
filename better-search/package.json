@@ -1,0 +1,17 @@
+{
+  "name": "better-search",
+  "version": "1.0.0",
+  "description": "better search for windows",
+  "main": "main.js",
+  
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [],
+  "author": "Atharv Remeshan",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.7.1"
+  }
+}
