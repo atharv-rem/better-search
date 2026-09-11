@@ -12,9 +12,17 @@
   "app": {
     "windows": [
       {
-        "title": "better-search",
-        "width": 800,
-        "height": 600
+        "title": "search",
+        "label": "better-search",
+        "width": 600,
+        "height": 54,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "center": true
       }
     ],
     "security": {

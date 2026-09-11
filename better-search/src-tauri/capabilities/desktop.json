@@ -6,7 +6,8 @@
     "linux"
   ],
   "windows": [
-    "main"
+    "main",
+    "better-search"
   ],
   "permissions": [
     "global-shortcut:default",

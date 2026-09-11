@@ -1,10 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the search window",
+  "windows": ["better-search"],
   "permissions": [
     "core:default",
+    "core:window:default",
+    "core:window:allow-set-size",
+    "core:window:allow-center",
+    "core:window:allow-hide",
     "opener:default"
   ]
 }
