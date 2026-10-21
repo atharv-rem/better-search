@@ -5,7 +5,14 @@ fn toggle_search(window: &WebviewWindow) {
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
     } else {
-        let _ = window.center();
+        // Cover the whole monitor so the translucent tint fills the screen
+        if let Ok(Some(monitor)) = window
+            .current_monitor()
+            .or_else(|_| window.primary_monitor())
+        {
+            let _ = window.set_position(*monitor.position());
+            let _ = window.set_size(*monitor.size());
+        }
         let _ = window.show();
         let _ = window.set_focus();
     }

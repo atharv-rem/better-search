@@ -14,15 +14,13 @@
       {
         "title": "search",
         "label": "better-search",
-        "width": 600,
-        "height": 54,
         "visible": false,
         "decorations": false,
+        "shadow": false,
         "transparent": true,
         "alwaysOnTop": true,
         "resizable": false,
-        "skipTaskbar": true,
-        "center": true
+        "skipTaskbar": true
       }
     ],
     "security": {
