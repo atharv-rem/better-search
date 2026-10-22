@@ -10,6 +10,6 @@ Write-Host "Building Better Search Go backend..." -ForegroundColor Cyan
 
 Set-Location $BackendDir
 
-go build -o "$BinaryDir\better-search-x86_64-pc-windows-msvc.exe" ./cmd/better-search
+go build -o "$BinaryDir\better-search-backend-x86_64-pc-windows-msvc.exe" ./cmd/better-search
 
-Write-Host "Build complete: $BinaryDir\better-search-x86_64-pc-windows-msvc.exe" -ForegroundColor Green
+Write-Host "Build complete: $BinaryDir\better-search-backend-x86_64-pc-windows-msvc.exe" -ForegroundColor Green

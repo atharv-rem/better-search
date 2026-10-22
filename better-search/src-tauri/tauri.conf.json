@@ -14,13 +14,17 @@
       {
         "title": "search",
         "label": "better-search",
+        "create": false,
         "visible": false,
         "decorations": false,
         "shadow": false,
         "transparent": true,
         "alwaysOnTop": true,
         "resizable": false,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "width": 488,
+        "height": 120,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu"
       }
     ],
     "security": {
@@ -38,7 +42,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/better-search"
+      "binaries/better-search-backend"
     ]
   }
 }
