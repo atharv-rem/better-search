@@ -2,21 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, GearSixIcon } from "@phosphor-icons/react";
 import { GlobalSearchIcon } from "@/components/global-search-icon";
 import { RamIcon, TimeIcon } from "@/components/stat-icons";
-import { loadIcon } from "@/components/file-icon";
+import { BrowserIcon, DEFAULT_BROWSER, useInstalledBrowsers } from "@/components/browser-icon";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 import { InputMessage } from "@/components/ui/input-message";
+import { PreviewPanel } from "@/components/preview-panel";
 import { SearchResults } from "@/components/search-results";
 import { TypeFilter } from "@/components/type-filter";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
+import { cn } from "@/lib/utils";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
+import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchUrl, type Settings } from "@/lib/settings";
 
 type IndexState =
   | { kind: "checking" }
@@ -33,78 +37,68 @@ function webQueryOf(query: string) {
   return query.startsWith("/") ? query.slice(1).trim() : null;
 }
 
-/** A browser a web search can go to. The installed ones come from `list_browsers`
- *  in lib.rs; "default" (the system's default browser) is always first. */
-type BrowserOption = { id: string; name: string; exe?: string };
-const DEFAULT_BROWSER: BrowserOption = { id: "default", name: "Default browser" };
-
-/** The browser's own icon from Windows; a globe for the default option, and
- *  until (or unless) the icon loads. */
-function BrowserIcon({ browser, size }: { browser: BrowserOption; size: number }) {
-  const [loaded, setLoaded] = useState<{ exe: string; url: string | null } | null>(null);
-  const { exe } = browser;
-  useEffect(() => {
-    if (!exe) return;
-    let cancelled = false;
-    loadIcon(exe).then((url) => {
-      if (!cancelled) setLoaded({ exe, url });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [exe]);
-
-  const url = exe && loaded?.exe === exe ? loaded.url : null;
-  if (url) {
-    return <img src={url} alt="" width={size} height={size} draggable={false} className="shrink-0 object-contain" />;
-  }
-  return <GlobalSearchIcon size={size} className="shrink-0" />;
-}
-
 /** Every icon in the web-search row and its browser menu, in pixels. */
 const ROW_ICON_SIZE = 16;
 
 /** Height of one menu item (16px line with py-1), for sizing the window. */
 const BROWSER_ITEM_HEIGHT = 24;
 
-const BROWSER_KEY = "web-search-browser";
-
-function loadBrowserId() {
-  try {
-    return localStorage.getItem(BROWSER_KEY) ?? DEFAULT_BROWSER.id;
-  } catch {
-    return DEFAULT_BROWSER.id; // storage unavailable
-  }
-}
-
-function useInstalledBrowsers(shownAt: number) {
-  const [installed, setInstalled] = useState<BrowserOption[]>([]);
-  // Re-read on every show: a browser may have been installed meanwhile.
-  useEffect(() => {
-    invoke<BrowserOption[]>("list_browsers")
-      .then(setInstalled)
-      .catch(() => {});
-  }, [shownAt]);
-  return useMemo(() => [DEFAULT_BROWSER, ...installed], [installed]);
-}
-
-function searchWeb(text: string, browser: string) {
-  const url = `https://www.google.com/search?q=${encodeURIComponent(text)}`;
-  return invoke("open_url", { url, browser }).then(() => hideWindow());
+function searchWeb(web: Settings["web"], text: string, browser: string) {
+  return invoke("open_url", { url: webSearchUrl(web, text), browser }).then(() => hideWindow());
 }
 
 // Kept within the frame's 24px padding: the window ends where the frame does,
 // so a wider shadow would be clipped.
 const panelShadow = "0 0 0 1px rgb(255 255 255 / 0.1), 0 4px 10px rgb(0 0 0 / 0.5), 0 10px 22px rgb(0 0 0 / 0.45)";
 
-/** The results list's height limit, in CSS pixels. The window's top sits a
- *  quarter of the way down the screen (lib.rs `place_search`) and grows
- *  downwards, so the list gets what's left above the taskbar after the bar,
- *  gaps and padding (~170px). With Windows text scaling a 420px list can
- *  otherwise run off the bottom of the screen. */
+/** The search-time and memory pills just above the bar: same padding, same
+ *  height. */
+const statPill = "flex h-5 items-center gap-1 rounded-md bg-black px-2";
+const statPillShadow = "0 0 0 1px rgb(255 255 255 / 0.1)";
+
+/** The square preview above the bar, in CSS pixels. Fixed, so moving between
+ *  results never resizes the window. */
+const PREVIEW_SIZE = 112;
+
+// The layout around the bar, in CSS pixels, for centring it all on screen.
+/** From the top of the row above the bar (the preview, with the stat pills at
+ *  its bottom right) to the bar, including the 8px gap below the row. */
+const ABOVE_BAR = PREVIEW_SIZE + 8;
+/** The bar with one line typed. */
+const BAR_HEIGHT = 72;
+/** From the bar's bottom to the results list's top: the type filter row (mt-1.5,
+ *  p-0.5 and 22px pills) and the panel's mt-2. */
+const BAR_TO_RESULTS = 32 + 8;
+/** A result row (search-results.tsx h-9) and the list's p-1.5 top and bottom. */
+const RESULT_ROW = 36;
+const RESULTS_PADDING = 12;
+/** Space kept clear of the screen's top and bottom edges. */
+const SCREEN_MARGIN = 24;
+
+/** Rows the results list shows before it scrolls. */
+const RESULT_ROWS = 6;
+
+/** The results list's height limit: RESULT_ROWS rows, or fewer whole rows if
+ *  the screen can't fit them, so the last one is never cut in half. */
 function resultsMaxHeight() {
-  const below = screen.availHeight - screen.height * 0.25 - 170;
-  return Math.max(120, Math.min(420, Math.floor(below)));
+  const room = screen.availHeight - 2 * SCREEN_MARGIN - ABOVE_BAR - BAR_HEIGHT - BAR_TO_RESULTS;
+  const rows = Math.min(RESULT_ROWS, Math.floor((room - RESULTS_PADDING) / RESULT_ROW));
+  return Math.max(3, rows) * RESULT_ROW + RESULTS_PADDING;
+}
+
+/** Where the bar's top sits on screen: wherever centres everything at its
+ *  fullest (pills, preview, bar, filters and a full results list) between
+ *  the top of the screen and the taskbar. lib.rs `place_search` puts it
+ *  there, so it stays put as results come and go. */
+function barScreenTop() {
+  const block = ABOVE_BAR + BAR_HEIGHT + BAR_TO_RESULTS + resultsMaxHeight();
+  return Math.max(SCREEN_MARGIN, (screen.availHeight - block) / 2) + ABOVE_BAR;
+}
+
+/** Physical pixels the preview's thumbnails are fitted within. Twice the
+ *  preview, as the thumbnail is cropped to fill the square. */
+function previewThumbSize() {
+  return Math.min(1024, Math.round(PREVIEW_SIZE * 2 * window.devicePixelRatio));
 }
 
 function hideWindow() {
@@ -146,8 +140,14 @@ function App() {
   const [typeFilter, setTypeFilter] = useState<FileGroup | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [index, setIndex] = useState<IndexState>({ kind: "checking" });
+  const settings = useSettings() ?? DEFAULT_SETTINGS;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const { max_results: maxResults, enter_reveals: enterReveals, show_preview: showPreview } = settings.search;
   const browsers = useInstalledBrowsers(shownAt);
-  const [savedBrowser, setSavedBrowser] = useState(loadBrowserId);
+  // Local too, so Tab can cycle faster than the save comes back.
+  const [savedBrowser, setSavedBrowser] = useState(settings.web.browser);
+  useEffect(() => setSavedBrowser(settings.web.browser), [settings.web.browser]);
   const [browserMenuOpen, setBrowserMenuOpen] = useState(false);
   // A browser that has since been uninstalled falls back to the default.
   const browser = browsers.find((b) => b.id === savedBrowser) ?? DEFAULT_BROWSER;
@@ -168,18 +168,22 @@ function App() {
     [results, activeFilter]
   );
 
-  // Fit the window to the search box and results as they change.
+  // Fit the window to the preview, search box and results as they change.
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame) return;
     const observer = new ResizeObserver(() => {
       // In physical pixels: Windows text scaling zooms the page, so CSS
       // pixels aren't the window's logical pixels.
-      const { width, height } = frame.getBoundingClientRect();
+      const { width, height, top } = frame.getBoundingClientRect();
+      const barTop = (searchRef.current?.getBoundingClientRect().top ?? top) - top;
       const ratio = window.devicePixelRatio;
       invoke("resize_window", {
         width: Math.ceil(width * ratio),
         height: Math.ceil(height * ratio),
+        // Rust keeps the bar in place, so the preview grows the window upwards.
+        barTop: Math.round(barTop * ratio),
+        barScreenTop: Math.round(barScreenTop() * ratio),
       }).catch(() => {});
     });
     observer.observe(frame);
@@ -219,8 +223,9 @@ function App() {
     const unlistenShown = listen("search-shown", () => {
       focusSearch();
       // A hidden window comes back with the last query: select it so typing
-      // starts a new search.
-      searchRef.current?.querySelector("textarea")?.select();
+      // starts a new search, or clear it if the settings say so.
+      if (settingsRef.current.search.clear_on_close) setQuery("");
+      else searchRef.current?.querySelector("textarea")?.select();
       setShownAt(Date.now());
     });
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -273,7 +278,7 @@ function App() {
     const timer = setTimeout(() => {
       const started = performance.now();
       backend
-        .search(query)
+        .search(query, maxResults)
         .then((r) => {
           if (seq !== searchSeq.current) return;
           setSearchMs(Math.max(1, Math.round(performance.now() - started)));
@@ -283,7 +288,7 @@ function App() {
         .catch(() => {});
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, ready, shownAt]);
+  }, [query, ready, shownAt, maxResults]);
 
   const openResult = useCallback(async (r: SearchResult, reveal: boolean) => {
     // Record the open before hiding: hiding stops the backend.
@@ -321,11 +326,8 @@ function App() {
 
   const chooseBrowser = (id: string) => {
     setSavedBrowser(id);
-    try {
-      localStorage.setItem(BROWSER_KEY, id);
-    } catch {
-      // not persisted; still applies for this session
-    }
+    const s = settingsRef.current;
+    saveSettings({ ...s, web: { ...s.web, browser: id } }).catch((err) => console.error("Failed to save browser:", err));
   };
 
   // Results keyboard: runs in the capture phase so InputMessage never sees
@@ -344,7 +346,7 @@ function App() {
       } else if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        if (webQuery) searchWeb(webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
+        if (webQuery) searchWeb(settings.web, webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
       }
       return;
     }
@@ -368,7 +370,7 @@ function App() {
       e.preventDefault();
       e.stopPropagation();
       const r = visible[activeIndex ?? 0];
-      if (r) openResult(r, e.ctrlKey);
+      if (r) openResult(r, e.ctrlKey !== enterReveals);
     }
   };
 
@@ -388,25 +390,40 @@ function App() {
     // The window is sized to this frame (see the resize effect), not the
     // screen; the padding is room for the shadow.
     <div ref={frameRef} className="dark relative w-fit p-6 select-none">
-      {/* In the top padding, out of the layout: appearing or changing never
-          resizes the window or moves the bar. */}
-      <div className="absolute top-0.5 right-6 flex items-center gap-2.5 rounded-md bg-black px-2 py-0.5 text-[10px] leading-3 font-medium text-zinc-200 tabular-nums" style={{ boxShadow: "0 0 0 1px rgb(255 255 255 / 0.1)" }}>
-        {searchMs !== null && (
-          <span className="flex items-center gap-1">
-            <TimeIcon size={11} />
-            {searchMs} ms
-          </span>
-        )}
-        <span className="flex items-center gap-1">
-          <RamIcon size={11} />
-          {memoryMb === null ? (
-            <span className="h-2 w-8 animate-pulse rounded-sm bg-white/15" role="status" aria-label="Reading memory usage" />
-          ) : (
-            <>{memoryMb} MB</>
-          )}
-        </span>
-      </div>
       <div className="w-110" onKeyDownCapture={handleKeyDownCapture}>
+        {/* The row above the bar: the preview on the left, the stat pills on
+            the right. Both sit on the row's bottom, so the pills stay just
+            above the bar whether the preview is there or not. */}
+        <div className="mb-2 flex items-end justify-between gap-2">
+          {showResults && visible.length > 0 && showPreview && (
+            // Its space is kept for as long as there are results (the square
+            // fades out for ones with nothing to preview), so the window only
+            // grows upwards once rather than as the preview comes and goes.
+            <PreviewPanel
+              result={visible[Math.min(activeIndex ?? 0, visible.length - 1)]}
+              size={PREVIEW_SIZE}
+              thumbSize={previewThumbSize()}
+              style={{ boxShadow: panelShadow }}
+            />
+          )}
+          {/* ml-auto: stays right when there's no preview to its left. */}
+          <div className="ml-auto flex items-center gap-1.5 text-[10px] leading-3 font-medium text-zinc-200 tabular-nums">
+            {searchMs !== null && (
+              <span className={cn(statPill, "motion-safe:animate-fade-in")} style={{ boxShadow: statPillShadow }}>
+                <TimeIcon size={11} />
+                {searchMs} ms
+              </span>
+            )}
+            <span className={statPill} style={{ boxShadow: statPillShadow }}>
+              <RamIcon size={11} />
+              {memoryMb === null ? (
+                <span className="h-2 w-8 animate-pulse rounded-sm bg-white/15" role="status" aria-label="Reading memory usage" />
+              ) : (
+                <>{memoryMb} MB</>
+              )}
+            </span>
+          </div>
+        </div>
         <InputMessage
           ref={searchRef}
           size="compact"
@@ -417,6 +434,17 @@ function App() {
           className="gap-0! bg-black! p-[5px]! text-white"
           style={{ boxShadow: panelShadow }}
           textareaProps={{ className: "placeholder:text-zinc-400!" }}
+          rightSlot={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Settings"
+              onClick={() => invoke("open_settings").catch((err) => console.error("Failed to open settings:", err))}
+            >
+              <GearSixIcon size={16} />
+            </Button>
+          }
         />
 
         {showResults && groups.length > 1 && (
@@ -434,14 +462,16 @@ function App() {
         {showPanel && (
           // Below the bar; the window grows downwards, so the bar never moves.
           <div
-            className="mt-2 overflow-hidden rounded-xl bg-black text-white"
+            // Rises in when it first appears (results, the web search row or
+            // the indexing panel); transform only, so the window resizes once.
+            className="mt-2 origin-top overflow-hidden rounded-xl bg-black text-white motion-safe:animate-rise-in"
             style={{ boxShadow: panelShadow }}
           >
             {webQuery !== null ? (
               <div className="flex items-center gap-2 pr-2">
                 <button
                   type="button"
-                  onClick={() => webQuery && searchWeb(webQuery, browser.id)}
+                  onClick={() => webQuery && searchWeb(settings.web, webQuery, browser.id)}
                   className="flex min-w-0 flex-1 items-center gap-2 p-3 pr-0 text-left text-[12px] leading-4"
                 >
                   <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
@@ -490,7 +520,8 @@ function App() {
                 results={visible}
                 activeIndex={activeIndex}
                 onActiveIndexChange={setActiveIndex}
-                onOpen={openResult}
+                // A click is like Enter, Ctrl+click like Ctrl+Enter.
+                onOpen={(r, ctrl) => openResult(r, ctrl !== enterReveals)}
                 maxHeight={resultsMaxHeight()}
               />
             ) : (

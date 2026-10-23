@@ -61,6 +61,8 @@ export class BackendError extends Error {
 const pending = new Map<string, { resolve: (m: Message) => void; reject: (e: Error) => void }>();
 const eventListeners = new Set<(e: BackendEvent) => void>();
 let nextId = 1;
+// Every window gets every reply, so ids must not clash between windows.
+const idPrefix = Math.random().toString(36).slice(2, 8);
 
 listen<string>("backend-message", ({ payload }) => {
   let msg: Message;
@@ -86,14 +88,15 @@ listen<string>("backend-message", ({ payload }) => {
   if (event) eventListeners.forEach((fn) => fn(event));
 });
 
-// The sidecar is stopped whenever the window hides: nothing in flight will be answered.
+// The sidecar is stopped whenever the search hides (and settings is closed):
+// nothing in flight will be answered.
 listen("backend-stopped", () => {
   for (const p of pending.values()) p.reject(new BackendError("backend stopped"));
   pending.clear();
 });
 
 async function request(type: string, fields: Record<string, unknown> = {}): Promise<Message> {
-  const id = String(nextId++);
+  const id = `${idPrefix}-${nextId++}`;
   const reply = new Promise<Message>((resolve, reject) => pending.set(id, { resolve, reject }));
   try {
     await invoke("backend_send", { message: JSON.stringify({ id, type, ...fields }) });

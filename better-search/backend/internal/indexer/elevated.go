@@ -40,8 +40,9 @@ func reportPath(dbPath string) string {
 }
 func lockPath(dbPath string) string { return filepath.Join(filepath.Dir(dbPath), "index.lock") }
 
-// RunChild is the body of the elevated "-index-only" process. Returns the exit code.
-func RunChild(dbPath string) int {
+// RunChild is the body of the elevated "-index-only" process. Returns the exit
+// code. settingsPath is the app's settings.json, for the user's exclusions.
+func RunChild(dbPath, settingsPath string) int {
 	lockName, _ := windows.UTF16PtrFromString(lockPath(dbPath))
 	lock, err := windows.CreateFile(lockName, windows.GENERIC_WRITE, 0, nil, windows.CREATE_ALWAYS,
 		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_DELETE_ON_CLOSE, 0)
@@ -68,6 +69,7 @@ func RunChild(dbPath string) int {
 	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, func(p Progress) {
 		report(Report{State: "running", Progress: &p})
 	})
+	ix.Apply(LoadOptions(settingsPath))
 	stats, err := ix.Run()
 	if err != nil {
 		report(Report{State: "error", Error: err.Error()})
@@ -140,7 +142,7 @@ var procShellExecuteEx = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellE
 
 // LaunchElevated starts "-index-only" as administrator. Windows shows the UAC
 // prompt and this blocks until the user answers it. Returns the process handle.
-func LaunchElevated(dbPath string) (windows.Handle, error) {
+func LaunchElevated(dbPath, settingsPath string) (windows.Handle, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, err
@@ -150,7 +152,11 @@ func LaunchElevated(dbPath string) (windows.Handle, error) {
 
 	verb, _ := windows.UTF16PtrFromString("runas")
 	file, _ := windows.UTF16PtrFromString(exe)
-	params, _ := windows.UTF16PtrFromString(syscall.EscapeArg("-index-only") + " -db " + syscall.EscapeArg(dbPath))
+	args := syscall.EscapeArg("-index-only") + " -db " + syscall.EscapeArg(dbPath)
+	if settingsPath != "" {
+		args += " -settings " + syscall.EscapeArg(settingsPath)
+	}
+	params, _ := windows.UTF16PtrFromString(args)
 
 	info := shellExecuteInfo{
 		fMask:        seeMaskNoCloseProcess | seeMaskNoAsync,

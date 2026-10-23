@@ -1,7 +1,6 @@
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_log::log;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{
@@ -9,8 +8,11 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
-/// The Go sidecar. It only runs while the search window is open; hiding the
-/// window stops it so the app sits idle in the background.
+mod settings;
+use settings::SettingsState;
+
+/// The Go sidecar. It only runs while the search or settings window is open;
+/// closing both stops it so the app sits idle in the background.
 #[derive(Default)]
 struct Backend(Mutex<Option<CommandChild>>);
 
@@ -21,9 +23,14 @@ fn start_backend(app: &AppHandle) {
         return;
     }
 
+    // The indexer reads the user's exclusions from settings.json.
     let spawned = app
         .shell()
         .sidecar("better-search-backend")
+        .map(|cmd| match settings::path(app) {
+            Some(path) => cmd.arg("-settings").arg(path),
+            None => cmd,
+        })
         .and_then(|cmd| cmd.spawn());
     let (mut rx, child) = match spawned {
         Ok(v) => v,
@@ -99,7 +106,12 @@ fn set_webview_low_memory(window: &WebviewWindow, low: bool) {
         if let Err(e) = result {
             log::warn!("Failed to set WebView memory level: {e}");
         }
-        set_webview_suspended(&controller, low);
+        // Not in `tauri dev`: a suspended page can't take Vite's updates, so
+        // they pile up and run as a full reload the moment Alt+S resumes it,
+        // and that reload stalls before the app mounts (a blank window).
+        if !cfg!(debug_assertions) {
+            set_webview_suspended(&controller, low);
+        }
     });
 }
 
@@ -139,10 +151,27 @@ unsafe fn set_webview_suspended(
 #[cfg(not(windows))]
 fn set_webview_low_memory(_window: &WebviewWindow, _low: bool) {}
 
-/// Centres the window horizontally a quarter of the way down the monitor
-/// the mouse is on, so results have room to grow downwards. The window is
-/// only as big as the search box (the page sizes it, see `resize_window`),
-/// which keeps WebView2's drawing buffers small.
+/// Where the search bar sits, in physical pixels, as the page reports with
+/// every `resize_window`.
+#[derive(Default)]
+struct BarLayout(Mutex<BarLayoutInner>);
+
+#[derive(Default)]
+struct BarLayoutInner {
+    /// How far down the window the bar is: the frame's padding, plus the
+    /// preview above the bar while one is shown.
+    top: i32,
+    /// How far down the screen the bar goes, which the page works out so the
+    /// bar, the preview above it and the results below look centred. None
+    /// until the page has loaded.
+    screen_top: Option<i32>,
+}
+
+/// Centres the window horizontally on the monitor the mouse is on, with the
+/// search bar as far down as the page asked (see `BarLayoutInner`), so
+/// results grow downwards and the preview upwards. The window is only as big
+/// as its content (the page sizes it, see `resize_window`), which keeps
+/// WebView2's drawing buffers small.
 fn place_search(window: &WebviewWindow) {
     let monitor = window
         .cursor_position()
@@ -155,10 +184,40 @@ fn place_search(window: &WebviewWindow) {
 
     let area = monitor.size();
     let origin = monitor.position();
+    let state = window.state::<BarLayout>();
+    let bar = state.0.lock().unwrap();
+    let bar_y = bar.screen_top.unwrap_or(area.height as i32 / 3);
     let _ = window.set_position(tauri::PhysicalPosition::new(
         origin.x + (area.width as i32 - size.width as i32) / 2,
-        origin.y + area.height as i32 / 4,
+        origin.y + bar_y - bar.top,
     ));
+}
+
+/// Moves and resizes in one step: done as two, the window would show for a
+/// frame with the bar out of place when the preview appears above it.
+#[cfg(windows)]
+fn set_bounds(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+
+    let Ok(hwnd) = window.hwnd() else { return };
+    unsafe {
+        let _ = SetWindowPos(
+            HWND(hwnd.0 as _),
+            None,
+            x,
+            y,
+            width as i32,
+            height as i32,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn set_bounds(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = window.set_size(tauri::PhysicalSize::new(width, height));
 }
 
 fn show_search(window: &WebviewWindow) {
@@ -210,7 +269,10 @@ fn open_search(app: &AppHandle) {
 
 fn hide_search(window: &WebviewWindow) {
     let _ = window.hide();
-    stop_backend(window.app_handle());
+    // The settings window shows the index and can rebuild it.
+    if window.app_handle().get_webview_window(SETTINGS_LABEL).is_none() {
+        stop_backend(window.app_handle());
+    }
     set_webview_low_memory(window, true);
 }
 
@@ -221,19 +283,82 @@ fn toggle_search(app: &AppHandle) {
     }
 }
 
+/// The settings window is an ordinary one: built when opened and destroyed
+/// when closed (see `run`), as it's rarely open. The page tells it apart from
+/// the search by its label.
+const SETTINGS_LABEL: &str = "settings";
+
+/// Async, as building a webview from a command on the main thread deadlocks.
+#[tauri::command]
+async fn open_settings(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    start_backend(&app);
+    // WebView2 shares one browser process between the windows, which only
+    // works if they're started with the same arguments.
+    let browser_args = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == SEARCH_LABEL)
+        .and_then(|w| w.additional_browser_args.clone());
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, SETTINGS_LABEL, tauri::WebviewUrl::App("index.html".into()))
+        .title("Better Search settings")
+        .inner_size(880.0, 560.0)
+        .resizable(false)
+        .maximizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .center();
+    if let Some(args) = browser_args {
+        builder = builder.additional_browser_args(&args);
+    }
+    builder.build().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Quits for good; otherwise the app keeps running in the background.
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    stop_backend(&app);
+    app.exit(0);
+}
+
+#[tauri::command]
+fn open_logs_folder(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Fits the window to the page's content. Sizes are physical pixels: the
 /// page's CSS pixels don't match Tauri's logical ones when Windows text
-/// scaling zooms the webview. Keeps the window centred horizontally and its
-/// top edge fixed, so results grow downwards.
+/// scaling zooms the webview. Keeps the window centred horizontally and the
+/// search bar where it is (`bar_top` is its offset in the window), so
+/// results grow downwards and the preview upwards. `bar_screen_top` is where
+/// `place_search` puts the bar the next time the search opens.
 #[tauri::command]
-fn resize_window(window: WebviewWindow, width: u32, height: u32) {
-    if let (Ok(pos), Ok(old)) = (window.outer_position(), window.outer_size()) {
-        if old.width != width {
+fn resize_window(window: WebviewWindow, width: u32, height: u32, bar_top: i32, bar_screen_top: i32) {
+    let state = window.state::<BarLayout>();
+    let mut bar = state.0.lock().unwrap();
+    match (window.outer_position(), window.outer_size()) {
+        (Ok(pos), Ok(old)) => {
             let x = pos.x + (old.width as i32 - width as i32) / 2;
-            let _ = window.set_position(tauri::PhysicalPosition::new(x, pos.y));
+            let y = pos.y + bar.top - bar_top;
+            set_bounds(&window, x, y, width, height);
+        }
+        _ => {
+            let _ = window.set_size(tauri::PhysicalSize::new(width, height));
         }
     }
-    let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+    bar.top = bar_top;
+    bar.screen_top = Some(bar_screen_top);
 }
 
 #[tauri::command]
@@ -434,12 +559,8 @@ async fn file_icon(path: String) -> Option<String> {
 
 #[cfg(windows)]
 fn shell_icon_png(path: &str) -> Option<String> {
-    use base64::Engine;
     use windows::core::PCWSTR;
-    use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    };
+    use windows::Win32::Graphics::Gdi::DeleteObject;
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
@@ -459,69 +580,282 @@ fn shell_icon_png(path: &str) -> Option<String> {
         }
 
         let mut icon = ICONINFO::default();
-        let have_info = GetIconInfo(info.hIcon, &mut icon).is_ok();
-        let mut rgba = None;
-        if have_info {
-            let mut bmp = BITMAP::default();
-            GetObjectW(
-                icon.hbmColor.into(),
-                std::mem::size_of::<BITMAP>() as i32,
-                Some(&mut bmp as *mut _ as *mut _),
-            );
-            let (w, h) = (bmp.bmWidth, bmp.bmHeight);
-            if w > 0 && h > 0 {
-                let mut header = BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: w,
-                    biHeight: -h, // top-down
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                };
-                let mut buf = vec![0u8; (w * h * 4) as usize];
-                let dc = CreateCompatibleDC(None);
-                let lines = GetDIBits(
-                    dc,
-                    icon.hbmColor,
-                    0,
-                    h as u32,
-                    Some(buf.as_mut_ptr() as *mut _),
-                    &mut header as *mut _ as *mut BITMAPINFO,
-                    DIB_RGB_COLORS,
-                );
-                let _ = DeleteDC(dc);
-                if lines != 0 {
-                    // BGRA -> RGBA. Icons without an alpha channel come back
-                    // all zero there, so make those opaque.
-                    let opaque = buf.chunks_exact(4).all(|px| px[3] == 0);
-                    for px in buf.chunks_exact_mut(4) {
-                        px.swap(0, 2);
-                        if opaque {
-                            px[3] = 255;
-                        }
-                    }
-                    rgba = Some((w as u32, h as u32, buf));
-                }
-            }
+        let mut png = None;
+        if GetIconInfo(info.hIcon, &mut icon).is_ok() {
+            png = bitmap_data_url(icon.hbmColor, false);
             let _ = DeleteObject(icon.hbmColor.into());
             let _ = DeleteObject(icon.hbmMask.into());
         }
         let _ = DestroyIcon(info.hIcon);
+        png
+    }
+}
 
-        let (w, h, buf) = rgba?;
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header().ok()?.write_image_data(&buf).ok()?;
+/// Explorer's thumbnail for a file (photos, video frames, PDF and Office
+/// pages, ...) as a `data:` URL, fitted within `size` × `size` physical
+/// pixels. None if Windows has no thumbnail for it, only an icon.
+#[cfg(windows)]
+#[tauri::command]
+async fn file_thumbnail(path: String, size: u32) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let size = size.clamp(16, 1024);
+        shell_thumbnail(&path, size).or_else(|| {
+            // Without Acrobat or a similar app, Windows has no PDF thumbnails.
+            path.to_lowercase().ends_with(".pdf").then(|| pdf_first_page(&path, size)).flatten()
+        })
+    })
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(windows)]
+fn shell_thumbnail(path: &str, size: u32) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::DeleteObject;
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_THUMBNAILONLY};
+
+    unsafe {
+        // Thumbnail providers are COM objects; this is a blocking-pool thread.
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let url = SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(PCWSTR(wide.as_ptr()), None)
+            .and_then(|factory| {
+                let side = size as i32;
+                factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_THUMBNAILONLY)
+            })
+            .ok()
+            .and_then(|bitmap| {
+                let url = bitmap_data_url(bitmap, true);
+                let _ = DeleteObject(bitmap.into());
+                url
+            });
+        if com {
+            CoUninitialize();
         }
+        url
+    }
+}
+
+/// A PDF's first page as a `data:image/png` URL, fitted within `size` ×
+/// `size` physical pixels, rendered by Windows' own PDF engine (Edge's).
+/// None for password-protected or broken files.
+#[cfg(windows)]
+fn pdf_first_page(path: &str, size: u32) -> Option<String> {
+    use base64::Engine;
+    use windows::core::HSTRING;
+    use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
+    use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+    use windows::Storage::StorageFile;
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+    let render = || -> windows::core::Result<Vec<u8>> {
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))?.join()?;
+        let page = PdfDocument::LoadFromFileAsync(&file)?.join()?.GetPage(0)?;
+        let page_size = page.Size()?;
+        let scale = size as f32 / page_size.Width.max(page_size.Height).max(1.0);
+        let options = PdfPageRenderOptions::new()?;
+        options.SetDestinationWidth((page_size.Width * scale).round().max(1.0) as u32)?;
+        options.SetDestinationHeight((page_size.Height * scale).round().max(1.0) as u32)?;
+        let stream = InMemoryRandomAccessStream::new()?;
+        page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
+        let len = stream.Size()? as u32;
+        let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
+        reader.LoadAsync(len)?.join()?;
+        let mut png = vec![0u8; len as usize];
+        reader.ReadBytes(&mut png)?;
+        Ok(png)
+    };
+
+    unsafe {
+        // Multithreaded: waiting on the render (`join`) would block a
+        // single-threaded apartment's message loop. Each thumbnail call
+        // uninitializes, so this thread has no apartment yet.
+        let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let png = render();
+        if com {
+            CoUninitialize();
+        }
+        let png = png.ok().filter(|png| !png.is_empty())?;
         Some(format!(
             "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(out)
+            base64::engine::general_purpose::STANDARD.encode(png)
         ))
     }
+}
+
+/// A 32-bit bitmap as a `data:` URL: a PNG, or with `jpeg_if_opaque` a JPEG
+/// when it has no transparency (photos are several times smaller as JPEG).
+/// The caller still owns `bitmap`.
+#[cfg(windows)]
+unsafe fn bitmap_data_url(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, jpeg_if_opaque: bool) -> Option<String> {
+    use base64::Engine;
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, DIB_RGB_COLORS,
+    };
+
+    let mut bmp = BITMAP::default();
+    GetObjectW(
+        bitmap.into(),
+        std::mem::size_of::<BITMAP>() as i32,
+        Some(&mut bmp as *mut _ as *mut _),
+    );
+    let (w, h) = (bmp.bmWidth, bmp.bmHeight);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let mut header = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: w,
+        biHeight: -h, // top-down
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB.0,
+        ..Default::default()
+    };
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let dc = CreateCompatibleDC(None);
+    let lines = GetDIBits(
+        dc,
+        bitmap,
+        0,
+        h as u32,
+        Some(buf.as_mut_ptr() as *mut _),
+        &mut header as *mut _ as *mut BITMAPINFO,
+        DIB_RGB_COLORS,
+    );
+    let _ = DeleteDC(dc);
+    if lines == 0 {
+        return None;
+    }
+    // BGRA -> RGBA. Bitmaps without an alpha channel come back all zero
+    // there, so make those opaque.
+    let opaque = buf.chunks_exact(4).all(|px| px[3] == 0);
+    for px in buf.chunks_exact_mut(4) {
+        px.swap(0, 2);
+        if opaque {
+            px[3] = 255;
+        }
+    }
+
+    let mut out = Vec::new();
+    if jpeg_if_opaque && buf.chunks_exact(4).all(|px| px[3] == 255) {
+        jpeg_encoder::Encoder::new(&mut out, 85)
+            .encode(&buf, w.try_into().ok()?, h.try_into().ok()?, jpeg_encoder::ColorType::Rgba)
+            .ok()?;
+        return Some(format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(out)
+        ));
+    }
+    {
+        let mut enc = png::Encoder::new(&mut out, w as u32, h as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().ok()?.write_image_data(&buf).ok()?;
+    }
+    Some(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(out)
+    ))
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+async fn file_thumbnail(_path: String, _size: u32) -> Option<String> {
+    None
+}
+
+/// The preview shows a screenful of text; this is plenty for that.
+const TEXT_PREVIEW_BYTES: u64 = 8 * 1024;
+
+/// The start of a text file, for the preview. None for binary files (any
+/// NUL byte, outside UTF-16) or files that can't be read.
+#[tauri::command]
+async fn text_preview(path: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        std::fs::File::open(&path)
+            .ok()?
+            .take(TEXT_PREVIEW_BYTES)
+            .read_to_end(&mut buf)
+            .ok()?;
+
+        // Notepad and PowerShell write UTF-16 with a byte-order mark.
+        if let Some(rest) = buf.strip_prefix(b"\xFF\xFE") {
+            let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            return Some(String::from_utf16_lossy(&units));
+        }
+        if buf.contains(&0) {
+            return None;
+        }
+        let text = buf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&buf);
+        // The cut may land inside a character.
+        Some(String::from_utf8_lossy(text).trim_end_matches('\u{FFFD}').to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[derive(serde::Serialize)]
+struct FolderEntry {
+    name: String,
+    dir: bool,
+}
+
+#[derive(serde::Serialize)]
+struct FolderPreview {
+    /// Folders first, then by name; at most `FOLDER_PREVIEW_ENTRIES`.
+    entries: Vec<FolderEntry>,
+    /// Visible entries counted, up to `FOLDER_SCAN_LIMIT`.
+    total: usize,
+    /// The folder holds more than `total`.
+    more: bool,
+}
+
+const FOLDER_PREVIEW_ENTRIES: usize = 30;
+/// Stops a huge folder (System32, node_modules) from stalling the preview.
+const FOLDER_SCAN_LIMIT: usize = 1000;
+
+/// A folder's contents for the preview, skipping hidden and system entries
+/// as Explorer does by default.
+#[tauri::command]
+async fn folder_preview(path: String) -> Option<FolderPreview> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut entries = Vec::new();
+        let mut more = false;
+        for entry in std::fs::read_dir(&path).ok()?.flatten() {
+            if entries.len() == FOLDER_SCAN_LIMIT {
+                more = true;
+                break;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const HIDDEN_OR_SYSTEM: u32 = 0x2 | 0x4;
+                if meta.file_attributes() & HIDDEN_OR_SYSTEM != 0 {
+                    continue;
+                }
+            }
+            entries.push(FolderEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                dir: meta.is_dir(),
+            });
+        }
+        let total = entries.len();
+        entries.sort_by_cached_key(|e| (!e.dir, e.name.to_lowercase()));
+        entries.truncate(FOLDER_PREVIEW_ENTRIES);
+        Some(FolderPreview { entries, total, more })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[cfg(not(windows))]
@@ -540,6 +874,7 @@ fn memory_usage() -> u64 {
 pub fn run() {
     tauri::Builder::default()
         .manage(Backend::default())
+        .manage(BarLayout::default())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
         .plugin(tauri_plugin_shell::init())
@@ -549,6 +884,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             resize_window,
             hide_window,
@@ -558,17 +894,26 @@ pub fn run() {
             open_url,
             list_browsers,
             file_icon,
-            memory_usage
+            file_thumbnail,
+            text_preview,
+            folder_preview,
+            memory_usage,
+            open_settings,
+            quit_app,
+            open_logs_folder,
+            settings::get_settings,
+            settings::update_settings,
+            settings::pause_shortcut,
+            settings::list_drives
         ])
         .setup(|app| {
             // No window until the first Alt+S ("create": false in tauri.conf.json).
-            let shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyS);
-
-            app.global_shortcut().on_shortcut(shortcut, |app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    toggle_search(app);
-                }
-            })?;
+            let saved = settings::load(app.handle());
+            if let Err(e) = settings::register_shortcut(app.handle(), &saved.shortcut) {
+                log::error!("{e} Falling back to {}.", settings::DEFAULT_SHORTCUT);
+                settings::register_shortcut(app.handle(), settings::DEFAULT_SHORTCUT)?;
+            }
+            app.manage(SettingsState(Mutex::new(saved)));
 
             // Build the window now, hidden, so the first Alt+S only has to
             // show it instead of waiting on WebView2 to start. The page
@@ -585,11 +930,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| {
+        .run(|app, event| match event {
             // Destroying the search window closes the last window, which would
             // quit the app; keep running in the background for Alt+S.
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
-                api.prevent_exit();
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+            // Settings closed: the backend only stays for an open search.
+            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. }
+                if label == SETTINGS_LABEL =>
+            {
+                let searching = app
+                    .get_webview_window(SEARCH_LABEL)
+                    .is_some_and(|w| w.is_visible().unwrap_or(false));
+                if !searching {
+                    stop_backend(app);
+                }
             }
+            _ => {}
         });
 }

@@ -16,7 +16,7 @@ export function TypeFilter({ groups, total, selected, onSelect }: TypeFilterProp
       role="group"
       aria-label="Filter by type"
       // p-0.5 leaves room for the pills' ring, which overflow would clip.
-      className="mt-1.5 flex gap-1.5 overflow-x-auto p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="mt-1.5 flex gap-1.5 overflow-x-auto p-0.5 [scrollbar-width:none] motion-safe:animate-fade-in [&::-webkit-scrollbar]:hidden"
     >
       <Pill label="All" count={total} active={selected === null} onClick={() => onSelect(null)} />
       {groups.map((g) => (

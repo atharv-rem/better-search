@@ -192,6 +192,10 @@ type Indexer struct {
 	excluded   map[string]bool
 	paths      *pathRule
 	onProgress func(Progress)
+
+	// From the user's settings (see Apply).
+	skipDrives map[string]bool
+	drivePaths map[string]*pathRule // by drive, "" for every drive
 }
 
 func New(db *database.DB, excludedDirs, excludedPaths []string, onProgress func(Progress)) *Indexer {
@@ -230,6 +234,10 @@ func (ix *Indexer) Run() ([]DriveStats, error) {
 		}
 	}()
 	for _, d := range drives {
+		if ix.skipDrives[d] {
+			log.Printf("Skipping %s: excluded in settings", d)
+			continue
+		}
 		v, err := openVolume(d)
 		if err != nil {
 			log.Printf("Skipping %s: %v", d, err)
@@ -243,7 +251,7 @@ func (ix *Indexer) Run() ([]DriveStats, error) {
 		targets = append(targets, target{v, idx})
 	}
 	if len(targets) == 0 {
-		return nil, errors.New("no NTFS drives found")
+		return nil, errors.New("no NTFS drives to index")
 	}
 
 	bulk, err := ix.db.BeginBulk()
@@ -314,7 +322,7 @@ func (ix *Indexer) save(bulk *database.Bulk, s *mftScan, drive string, volIndex 
 
 	// Path rules still live inside each included folder; only folders on the
 	// way down a DefaultExcludedPaths entry have any.
-	live := map[uint32][]*pathRule{rootRecord: {ix.paths}}
+	live := map[uint32][]*pathRule{rootRecord: ix.rootRules(drive)}
 
 	var resolve func(r uint32) bool
 	// accept is true if a name in folder parent makes record r part of the

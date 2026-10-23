@@ -23,11 +23,12 @@ import (
 
 func main() {
 	dbPath := flag.String("db", database.DefaultPath(), "path to the SQLite index")
+	settingsPath := flag.String("settings", "", "the app's settings.json, for the user's indexing exclusions")
 	indexOnly := flag.Bool("index-only", false, "build the index and exit (run elevated)")
 	flag.Parse()
 
 	if *indexOnly {
-		os.Exit(indexer.RunChild(*dbPath))
+		os.Exit(indexer.RunChild(*dbPath, *settingsPath))
 	}
 
 	log.Println("🚀 Better Search backend started successfully!")
@@ -135,7 +136,7 @@ func main() {
 			// LaunchElevated blocks until the user answers the UAC prompt,
 			// so keep reading requests meanwhile.
 			go func(id string) {
-				proc, err := indexer.LaunchElevated(*dbPath)
+				proc, err := indexer.LaunchElevated(*dbPath, *settingsPath)
 				if err != nil {
 					indexing.Store(false)
 					code := ""

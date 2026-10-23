@@ -44,6 +44,14 @@ export function SearchResults({ results, activeIndex, onActiveIndexChange, onOpe
     onActiveIndexChange(hover.activeIndex);
   }, [hover.activeIndex, onActiveIndexChange]);
 
+  // New results (another query, or a type filter) fade in rather than swap in
+  // place. Opacity only: the list's size is the window's to change.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    list.animate([{ opacity: 0.35 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+  }, [results]);
+
   useEffect(() => {
     if (activeIndex === null) return;
     listRef.current
@@ -100,17 +108,17 @@ function ResultRow({ result, index, active, registerItem, onOpen }: ResultRowPro
       aria-selected={active}
       title={result.path}
       onClick={(e) => onOpen(result, e.ctrlKey)}
-      className="relative flex h-11 shrink-0 cursor-pointer items-center gap-2.5 px-2.5"
+      className="relative flex h-9 shrink-0 cursor-pointer items-center gap-2 px-2"
     >
-      <FileIcon result={result} size={24} />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <FileIcon result={result} size={18} />
+      <div className="flex min-w-0 flex-1 flex-col">
         <span
-          className={cn("truncate text-[13px] leading-4 transition-colors duration-80", active ? "text-white" : "text-zinc-200")}
+          className={cn("truncate text-[12px] leading-4 transition-colors duration-80", active ? "text-white" : "text-zinc-200")}
           style={{ fontVariationSettings: fontWeights.semibold }}
         >
           {result.name}
         </span>
-        <span className="truncate text-[11px] leading-3.5 text-zinc-500">{parentOf(result.path)}</span>
+        <span className="truncate text-[10px] leading-3 text-zinc-500">{parentOf(result.path)}</span>
       </div>
     </div>
   );

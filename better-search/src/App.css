@@ -248,3 +248,22 @@
   html.transitioning *, html.transitioning *::before, html.transitioning *::after {
     transition: border-radius 180ms ease-in-out, background-color 180ms ease-in-out, color 180ms ease-in-out, border-color 180ms ease-in-out, fill 180ms ease-in-out, stroke 180ms ease-in-out !important;
 }
+/* Search UI motion: opacity and transform only. The window is sized to its
+   content, so animating a size would resize the window every frame. Used
+   through `motion-safe:`, so they're skipped when Windows' animation effects
+   are off. */
+@theme {
+  --animate-rise-in: rise-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-fade-in: fade-in 160ms ease-out both;
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.985);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+}

@@ -26,7 +26,19 @@ serde_json = "1"
 tokio = { version = "1", features = ["time"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
 
+
+# Unoptimized, encoding a preview thumbnail takes several times longer, which
+# makes the preview lag behind the arrow keys in `tauri dev`.
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.jpeg-encoder]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
@@ -43,6 +55,12 @@ webview2-com = "0.39"
 windows-core = "0.62"
 # Private working set for the memory readout.
 windows = { version = "0.62", features = [
+    # First-page previews of PDFs, which Windows has no thumbnails for.
+    "Data_Pdf",
+    "Foundation",
+    "Storage",
+    "Storage_Streams",
+    "Win32_System_Com",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_Graphics_Gdi",
@@ -54,6 +72,8 @@ windows = { version = "0.62", features = [
 png = "0.18"
 base64 = "0.22"
 winreg = "0.55"
+# Encodes preview thumbnails of photos, a fraction of their size as PNG.
+jpeg-encoder = "0.7.1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"

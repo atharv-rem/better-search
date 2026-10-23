@@ -1,0 +1,81 @@
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+// The user's settings. The shell owns them (settings.rs, which also checks
+// every change); each window reads them with `useSettings` and stays in sync
+// through the "settings-changed" event that every save sends.
+
+export interface Settings {
+  /** Opens and closes the search, like "Alt+S". */
+  shortcut: string;
+  search: {
+    max_results: number;
+    /** Enter shows the result in Explorer and Ctrl+Enter opens it. */
+    enter_reveals: boolean;
+    clear_on_close: boolean;
+    show_preview: boolean;
+  };
+  web: {
+    engine: SearchEngineId | "custom";
+    /** An https URL with %s where the query goes, for the "custom" engine. */
+    custom_url: string;
+    /** A browser id from `list_browsers`, or "default". */
+    browser: string;
+  };
+  /** Applied the next time the index is rebuilt. */
+  indexing: {
+    excluded_drives: string[];
+    /** Full paths, or folder names skipped wherever they are. */
+    excluded_folders: string[];
+  };
+}
+
+/** Until the saved ones arrive. Matches `Settings::default` in settings.rs. */
+export const DEFAULT_SETTINGS: Settings = {
+  shortcut: "Alt+S",
+  search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true },
+  web: { engine: "google", custom_url: "", browser: "default" },
+  indexing: { excluded_drives: [], excluded_folders: [] },
+};
+
+export const SEARCH_ENGINES = [
+  { id: "google", name: "Google", url: "https://www.google.com/search?q=%s" },
+  { id: "bing", name: "Bing", url: "https://www.bing.com/search?q=%s" },
+  { id: "duckduckgo", name: "DuckDuckGo", url: "https://duckduckgo.com/?q=%s" },
+  { id: "brave", name: "Brave Search", url: "https://search.brave.com/search?q=%s" },
+] as const;
+
+export type SearchEngineId = (typeof SEARCH_ENGINES)[number]["id"];
+
+/** The page a web search for `text` opens. */
+export function webSearchUrl(web: Settings["web"], text: string) {
+  const template =
+    web.engine === "custom" ? web.custom_url : (SEARCH_ENGINES.find((e) => e.id === web.engine) ?? SEARCH_ENGINES[0]).url;
+  return template.split("%s").join(encodeURIComponent(text));
+}
+
+/** Saves the whole settings. Rejects with a message to show (a shortcut
+ *  another app has, a bad search URL) and then nothing is saved. */
+export function saveSettings(settings: Settings): Promise<Settings> {
+  return invoke<Settings>("update_settings", { settings }).catch((err) => {
+    throw new Error(String(err));
+  });
+}
+
+/** The saved settings, kept current; null until they've loaded. */
+export function useSettings(): Settings | null {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<Settings>("get_settings")
+      .then((s) => !cancelled && setSettings(s))
+      .catch(() => !cancelled && setSettings(DEFAULT_SETTINGS));
+    const unlisten = listen<Settings>("settings-changed", ({ payload }) => setSettings(payload));
+    return () => {
+      cancelled = true;
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+  return settings;
+}
