@@ -5,7 +5,7 @@ import { useShape } from "@/lib/shape-context";
 import { useFluidHover, useRegisterFluidHoverItem } from "@/hooks/use-fluid-hover";
 import { FluidHoverHighlight } from "@/components/fluid-hover-highlight";
 import type { SearchResult } from "@/lib/backend";
-import { iconOf } from "@/lib/file-icons";
+import { FileIcon } from "@/components/file-icon";
 
 interface SearchResultsProps {
   results: SearchResult[];
@@ -91,7 +91,6 @@ interface ResultRowProps {
 function ResultRow({ result, index, active, registerItem, onOpen }: ResultRowProps) {
   const ref = useRef<HTMLDivElement>(null);
   useRegisterFluidHoverItem(registerItem, index, ref);
-  const { Icon, color } = iconOf(result);
 
   return (
     <div
@@ -103,7 +102,7 @@ function ResultRow({ result, index, active, registerItem, onOpen }: ResultRowPro
       onClick={(e) => onOpen(result, e.ctrlKey)}
       className="relative flex h-11 shrink-0 cursor-pointer items-center gap-2.5 px-2.5"
     >
-      <Icon size={24} weight="duotone" color={color} className="shrink-0" />
+      <FileIcon result={result} size={24} />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span
           className={cn("truncate text-[13px] leading-4 transition-colors duration-80", active ? "text-white" : "text-zinc-200")}

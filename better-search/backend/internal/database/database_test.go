@@ -91,6 +91,29 @@ func TestSearchAndPath(t *testing.T) {
 	}
 }
 
+func TestRankByKind(t *testing.T) {
+	db := openTest(t)
+	load(t, db, []File{
+		{ID: 5, Name: "C:", IsDir: true},
+		{ID: 40, ParentID: 5, Name: "spotify_cache.dat"},
+		{ID: 41, ParentID: 5, Name: "Spotify.lnk"},
+		{ID: 42, ParentID: 5, Name: "Spotify", IsDir: true},
+		{ID: 43, ParentID: 5, Name: "SpotifyLauncher.exe"},
+		{ID: 44, ParentID: 5, Name: "Spotify.exe"},
+	})
+	// Exact file, then apps, then folders and shortcuts, then other files.
+	want := []string{"Spotify.exe", "SpotifyLauncher.exe", "Spotify", "Spotify.lnk", "spotify_cache.dat"}
+	got := names(t, db, "spotify")
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
 func TestReindexKeepsUsageAndFTS(t *testing.T) {
 	db := openTest(t)
 	load(t, db, tree)

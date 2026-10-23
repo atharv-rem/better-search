@@ -9,13 +9,32 @@ import (
 
 const fileColumns = `f.id, f.parent_id, f.name, f.is_dir, f.size, f.modified_at, f.open_count, f.last_opened`
 
-// Ranking: exact name, then the files the user opens most and most recently,
-// then names starting with the query, then shorter names.
+// exactName matches a name equal to the query, with or without its extension
+// ("resume" matches Resume.pdf). Args: query, query + ".%", query length.
+const exactName = `(f.name = ? COLLATE NOCASE
+  OR (f.name LIKE ? ESCAPE '\' AND instr(substr(f.name, ? + 2), '.') = 0))`
+
+// Ranking by kind first: an exact file, then apps (.exe) starting with the
+// query, then shortcuts (.lnk) and folders, then other files. Within each:
+// exact name, the files the user opens most and most recently, names
+// starting with the query, names with a word starting with it (after a
+// space, dot, underscore or dash), then shorter names.
 const rankOrder = `
-ORDER BY (f.name = ? COLLATE NOCASE) DESC,
+ORDER BY CASE
+           WHEN f.is_dir = 1 OR f.name LIKE '%.lnk' THEN 2
+           WHEN ` + exactName + ` THEN 0
+           WHEN f.name LIKE '%.exe' AND f.name LIKE ? ESCAPE '\' THEN 1
+           ELSE 3
+         END,
+         ` + exactName + ` DESC,
          f.open_count DESC,
          f.last_opened DESC,
-         (f.name LIKE ? ESCAPE '\') DESC,
+         CASE
+           WHEN f.name LIKE ? ESCAPE '\' THEN 0
+           WHEN f.name LIKE ? ESCAPE '\' OR f.name LIKE ? ESCAPE '\'
+             OR f.name LIKE ? ESCAPE '\' OR f.name LIKE ? ESCAPE '\' THEN 1
+           ELSE 2
+         END,
          length(f.name),
          f.name`
 
@@ -55,7 +74,12 @@ func (d *DB) SearchNames(query string, terms []string, limit int) ([]File, error
 		args = append(args, "%"+escapeLike(t)+"%")
 	}
 	q.WriteString(rankOrder + " LIMIT ?")
-	args = append(args, query, escapeLike(query)+"%", limit)
+	esc := escapeLike(query)
+	exact := []any{query, esc + ".%", len([]rune(query))}
+	args = append(args, exact...)
+	args = append(args, esc+"%")
+	args = append(args, exact...)
+	args = append(args, esc+"%", "% "+esc+"%", "%."+esc+"%", `%\_`+esc+"%", "%-"+esc+"%", limit)
 
 	rows, err := d.sql.Query(q.String(), args...)
 	if err != nil {

@@ -34,5 +34,9 @@ export default defineConfig(() => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // 4. compile the app while cargo builds, not on the webview's first request
+    warmup: {
+      clientFiles: ["./src/main.tsx"],
+    },
   },
 }));

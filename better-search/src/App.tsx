@@ -2,7 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { MemoryIcon, TimerIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { GlobalSearchIcon } from "@/components/global-search-icon";
+import { RamIcon, TimeIcon } from "@/components/stat-icons";
+import { loadIcon } from "@/components/file-icon";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { InputMessage } from "@/components/ui/input-message";
 import { SearchResults } from "@/components/search-results";
 import { TypeFilter } from "@/components/type-filter";
@@ -18,6 +27,71 @@ type IndexState =
   | { kind: "error"; message: string };
 
 const SEARCH_DEBOUNCE_MS = 100;
+
+/** "/ cats" searches the web for "cats"; null for an ordinary file search. */
+function webQueryOf(query: string) {
+  return query.startsWith("/") ? query.slice(1).trim() : null;
+}
+
+/** A browser a web search can go to. The installed ones come from `list_browsers`
+ *  in lib.rs; "default" (the system's default browser) is always first. */
+type BrowserOption = { id: string; name: string; exe?: string };
+const DEFAULT_BROWSER: BrowserOption = { id: "default", name: "Default browser" };
+
+/** The browser's own icon from Windows; a globe for the default option, and
+ *  until (or unless) the icon loads. */
+function BrowserIcon({ browser, size }: { browser: BrowserOption; size: number }) {
+  const [loaded, setLoaded] = useState<{ exe: string; url: string | null } | null>(null);
+  const { exe } = browser;
+  useEffect(() => {
+    if (!exe) return;
+    let cancelled = false;
+    loadIcon(exe).then((url) => {
+      if (!cancelled) setLoaded({ exe, url });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [exe]);
+
+  const url = exe && loaded?.exe === exe ? loaded.url : null;
+  if (url) {
+    return <img src={url} alt="" width={size} height={size} draggable={false} className="shrink-0 object-contain" />;
+  }
+  return <GlobalSearchIcon size={size} className="shrink-0" />;
+}
+
+/** Every icon in the web-search row and its browser menu, in pixels. */
+const ROW_ICON_SIZE = 16;
+
+/** Height of one menu item (16px line with py-1), for sizing the window. */
+const BROWSER_ITEM_HEIGHT = 24;
+
+const BROWSER_KEY = "web-search-browser";
+
+function loadBrowserId() {
+  try {
+    return localStorage.getItem(BROWSER_KEY) ?? DEFAULT_BROWSER.id;
+  } catch {
+    return DEFAULT_BROWSER.id; // storage unavailable
+  }
+}
+
+function useInstalledBrowsers(shownAt: number) {
+  const [installed, setInstalled] = useState<BrowserOption[]>([]);
+  // Re-read on every show: a browser may have been installed meanwhile.
+  useEffect(() => {
+    invoke<BrowserOption[]>("list_browsers")
+      .then(setInstalled)
+      .catch(() => {});
+  }, [shownAt]);
+  return useMemo(() => [DEFAULT_BROWSER, ...installed], [installed]);
+}
+
+function searchWeb(text: string, browser: string) {
+  const url = `https://www.google.com/search?q=${encodeURIComponent(text)}`;
+  return invoke("open_url", { url, browser }).then(() => hideWindow());
+}
 
 // Kept within the frame's 24px padding: the window ends where the frame does,
 // so a wider shadow would be clipped.
@@ -37,31 +111,46 @@ function hideWindow() {
   return invoke("hide_window").catch(() => getCurrentWindow().hide());
 }
 
-/** App memory (shell, webview and backend), refreshed while the window is open. */
-function useMemoryUsage() {
+/** App memory (shell, webview and backend), refreshed while the window is open.
+ *  Null on every show until the first fresh reading: the number from before
+ *  the window was hidden is stale (the webview was trimmed and resumed since). */
+function useMemoryUsage(shownAt: number) {
   const [mb, setMb] = useState<number | null>(null);
   useEffect(() => {
+    setMb(null);
     const poll = () =>
       invoke<number>("memory_usage")
         // A failed reading (0) keeps the last value rather than blanking it.
         .then((bytes) => bytes > 0 && setMb(Math.round(bytes / 1048576)))
         .catch(() => {});
-    poll();
-    const timer = setInterval(poll, 3000);
-    return () => clearInterval(timer);
-  }, []);
+    let timer: ReturnType<typeof setInterval>;
+    // Let the resumed webview settle before the first reading.
+    const first = setTimeout(() => {
+      poll();
+      timer = setInterval(poll, 3000);
+    }, 1200);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [shownAt]);
   return mb;
 }
 
 function App() {
-  const memoryMb = useMemoryUsage();
+  const [shownAt, setShownAt] = useState(0); // bumps on every Alt+S
+  const memoryMb = useMemoryUsage(shownAt);
   const [searchMs, setSearchMs] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [typeFilter, setTypeFilter] = useState<FileGroup | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [index, setIndex] = useState<IndexState>({ kind: "checking" });
-  const [shownAt, setShownAt] = useState(0); // bumps on every Alt+S
+  const browsers = useInstalledBrowsers(shownAt);
+  const [savedBrowser, setSavedBrowser] = useState(loadBrowserId);
+  const [browserMenuOpen, setBrowserMenuOpen] = useState(false);
+  // A browser that has since been uninstalled falls back to the default.
+  const browser = browsers.find((b) => b.id === savedBrowser) ?? DEFAULT_BROWSER;
   const searchRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const searchSeq = useRef(0);
@@ -69,6 +158,7 @@ function App() {
   indexRef.current = index;
 
   const ready = index.kind === "ready";
+  const webQuery = webQueryOf(query);
 
   const groups = useMemo(() => countGroups(results), [results]);
   // A new search may have no results of the chosen type: show everything then.
@@ -136,6 +226,8 @@ function App() {
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) focusSearch();
     });
+    // Loaded and listening: the hidden window may now be suspended.
+    unlistenShown.then(() => invoke("search_ready")).catch(() => {});
 
     return () => {
       unlistenShown.then((fn) => fn());
@@ -172,7 +264,7 @@ function App() {
   // newest request's answer is shown.
   useEffect(() => {
     const seq = ++searchSeq.current;
-    if (!ready || !query.trim()) {
+    if (!ready || !query.trim() || webQueryOf(query) !== null) {
       setSearchMs(null);
       setResults([]);
       setActiveIndex(null);
@@ -227,15 +319,51 @@ function App() {
     }
   }, []);
 
+  const chooseBrowser = (id: string) => {
+    setSavedBrowser(id);
+    try {
+      localStorage.setItem(BROWSER_KEY, id);
+    } catch {
+      // not persisted; still applies for this session
+    }
+  };
+
   // Results keyboard: runs in the capture phase so InputMessage never sees
   // these keys (its Enter would "send" and clear the box).
   const handleKeyDownCapture = (e: ReactKeyboardEvent) => {
+    // The browser menu renders in a portal, but its keys bubble through here.
+    if ((e.target as HTMLElement).closest('[data-slot="dropdown-menu-content"]')) return;
+    if (webQuery !== null) {
+      if (e.key === "Tab") {
+        // Cycle the browser to search in; Shift+Tab goes back.
+        e.preventDefault();
+        e.stopPropagation();
+        const at = browsers.findIndex((b) => b.id === browser.id);
+        const step = e.shiftKey ? -1 : 1;
+        chooseBrowser(browsers[(at + step + browsers.length) % browsers.length].id);
+      } else if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (webQuery) searchWeb(webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
+      }
+      return;
+    }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       if (!visible.length) return;
       e.preventDefault();
       e.stopPropagation();
       const step = e.key === "ArrowDown" ? 1 : -1;
       setActiveIndex((i) => (i === null ? 0 : (i + step + visible.length) % visible.length));
+    } else if (e.key === "Tab") {
+      // Cycle the type pills (All, then each group); Shift+Tab goes back.
+      e.preventDefault();
+      e.stopPropagation();
+      if (groups.length < 2) return;
+      const order: (FileGroup | null)[] = [null, ...groups.map((g) => g.id)];
+      const step = e.shiftKey ? -1 : 1;
+      const at = order.indexOf(activeFilter);
+      setTypeFilter(order[(at + step + order.length) % order.length]);
+      setActiveIndex(0);
     } else if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
@@ -244,17 +372,17 @@ function App() {
     }
   };
 
-  // Hide window when pressing Escape
+  // Hide window when pressing Escape (an open menu takes it first)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") hideWindow().catch((err) => console.error("Failed to hide window:", err));
+      if (e.key === "Escape" && !e.defaultPrevented) hideWindow().catch((err) => console.error("Failed to hide window:", err));
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   const showResults = ready && results.length > 0;
-  const showPanel = showResults || (index.kind !== "ready" && index.kind !== "checking");
+  const showPanel = webQuery !== null || showResults || (index.kind !== "ready" && index.kind !== "checking");
 
   return (
     // The window is sized to this frame (see the resize effect), not the
@@ -262,22 +390,22 @@ function App() {
     <div ref={frameRef} className="dark relative w-fit p-6 select-none">
       {/* In the top padding, out of the layout: appearing or changing never
           resizes the window or moves the bar. */}
-      {(memoryMb !== null || searchMs !== null) && (
-        <div className="absolute top-0.5 right-6 flex items-center gap-2.5 rounded-md bg-black px-2 py-0.5 text-[10px] leading-3 font-medium text-zinc-200 tabular-nums" style={{ boxShadow: "0 0 0 1px rgb(255 255 255 / 0.1)" }}>
-          {searchMs !== null && (
-            <span className="flex items-center gap-1">
-              <TimerIcon size={11} />
-              {searchMs} ms
-            </span>
+      <div className="absolute top-0.5 right-6 flex items-center gap-2.5 rounded-md bg-black px-2 py-0.5 text-[10px] leading-3 font-medium text-zinc-200 tabular-nums" style={{ boxShadow: "0 0 0 1px rgb(255 255 255 / 0.1)" }}>
+        {searchMs !== null && (
+          <span className="flex items-center gap-1">
+            <TimeIcon size={11} />
+            {searchMs} ms
+          </span>
+        )}
+        <span className="flex items-center gap-1">
+          <RamIcon size={11} />
+          {memoryMb === null ? (
+            <span className="h-2 w-8 animate-pulse rounded-sm bg-white/15" role="status" aria-label="Reading memory usage" />
+          ) : (
+            <>{memoryMb} MB</>
           )}
-          {memoryMb !== null && (
-            <span className="flex items-center gap-1">
-              <MemoryIcon size={11} />
-              {memoryMb} MB
-            </span>
-          )}
-        </div>
-      )}
+        </span>
+      </div>
       <div className="w-110" onKeyDownCapture={handleKeyDownCapture}>
         <InputMessage
           ref={searchRef}
@@ -309,7 +437,55 @@ function App() {
             className="mt-2 overflow-hidden rounded-xl bg-black text-white"
             style={{ boxShadow: panelShadow }}
           >
-            {showResults ? (
+            {webQuery !== null ? (
+              <div className="flex items-center gap-2 pr-2">
+                <button
+                  type="button"
+                  onClick={() => webQuery && searchWeb(webQuery, browser.id)}
+                  className="flex min-w-0 flex-1 items-center gap-2 p-3 pr-0 text-left text-[12px] leading-4"
+                >
+                  <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
+                  <span className="truncate">
+                    {webQuery ? `Search the web for “${webQuery}”` : "Type something to search the web"}
+                  </span>
+                </button>
+                <DropdownMenu onOpenChange={setBrowserMenuOpen}>
+                  <DropdownMenuTrigger
+                    className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1 text-[12px] leading-4 text-white outline-hidden transition-colors hover:bg-white/10 focus-visible:bg-white/10 data-[state=open]:bg-white/10"
+                    aria-label="Browser to search in"
+                  >
+                    <BrowserIcon browser={browser} size={ROW_ICON_SIZE} />
+                    <span className="max-w-28 truncate">{browser.name}</span>
+                    <CaretDownIcon size={ROW_ICON_SIZE} />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    side="bottom"
+                    align="end"
+                    // The window is only as tall as the frame (see the spacer
+                    // below), so don't let the menu flip up while it catches up.
+                    avoidCollisions={false}
+                    className="dark border-white/10 bg-zinc-950 text-white"
+                    // Hand focus back to the search box, not the trigger.
+                    onCloseAutoFocus={(e) => {
+                      e.preventDefault();
+                      searchRef.current?.querySelector("textarea")?.focus();
+                    }}
+                  >
+                    {browsers.map((b) => (
+                      <DropdownMenuItem
+                        key={b.id}
+                        className="gap-2 py-1 text-[12px] leading-4 text-white focus:text-white"
+                        onSelect={() => chooseBrowser(b.id)}
+                      >
+                        <BrowserIcon browser={b} size={ROW_ICON_SIZE} />
+                        <span className="truncate">{b.name}</span>
+                        {b.id === browser.id && <CheckIcon size={ROW_ICON_SIZE} className="ml-auto shrink-0" />}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ) : showResults ? (
               <SearchResults
                 results={visible}
                 activeIndex={activeIndex}
@@ -322,6 +498,9 @@ function App() {
             )}
           </div>
         )}
+        {/* The menu opens below the bar, outside the frame; the window only
+            covers the frame, so make room for it while it's open. */}
+        {browserMenuOpen && webQuery !== null && <div style={{ height: browsers.length * BROWSER_ITEM_HEIGHT }} />}
       </div>
     </div>
   );

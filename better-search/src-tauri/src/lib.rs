@@ -1,5 +1,4 @@
 use std::sync::Mutex;
-use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -242,6 +241,17 @@ fn hide_window(window: WebviewWindow) {
     hide_search(&window);
 }
 
+/// The page calls this once it has loaded and mounted. Only then is the
+/// hidden, pre-built window trimmed and suspended: suspending on a timer
+/// could freeze a page still loading (Vite's first, cold load in `tauri dev`
+/// takes several seconds), leaving the first Alt+S to wait for the rest.
+#[tauri::command]
+fn search_ready(window: WebviewWindow) {
+    if !window.is_visible().unwrap_or(true) {
+        set_webview_low_memory(&window, true);
+    }
+}
+
 /// Writes one JSON request line to the backend's stdin.
 #[tauri::command]
 fn backend_send(app: AppHandle, message: String) -> Result<(), String> {
@@ -263,6 +273,98 @@ fn open_result(app: AppHandle, path: String, reveal: bool) -> Result<(), String>
         opener.open_path(&path, None::<&str>)
     }
     .map_err(|e| e.to_string())
+}
+
+/// A browser installed on this machine, as registered with Windows.
+#[derive(serde::Serialize)]
+struct Browser {
+    /// The registration's key name under `Clients\StartMenuInternet`.
+    id: String,
+    name: String,
+    /// The browser's program, which the page asks `file_icon` for the icon of.
+    /// Display only: `open_url` looks the program up again from the id.
+    exe: String,
+}
+
+/// Browsers registered under `Clients\StartMenuInternet`, the list Windows'
+/// own "Default apps" page is built from.
+#[cfg(windows)]
+fn installed_browsers() -> Vec<Browser> {
+    use winreg::{enums::*, RegKey};
+
+    const CLIENTS: &str = r"SOFTWARE\Clients\StartMenuInternet";
+    let mut found: Vec<Browser> = Vec::new();
+    for (hive, path) in [
+        (HKEY_LOCAL_MACHINE, CLIENTS.to_string()),
+        (HKEY_CURRENT_USER, CLIENTS.to_string()),
+        (HKEY_LOCAL_MACHINE, CLIENTS.replace("SOFTWARE", r"SOFTWARE\WOW6432Node")),
+    ] {
+        let Ok(clients) = RegKey::predef(hive).open_subkey(path) else { continue };
+        for id in clients.enum_keys().flatten() {
+            if found.iter().any(|b| b.id == id) || id.eq_ignore_ascii_case("IEXPLORE.EXE") {
+                continue;
+            }
+            let Ok(key) = clients.open_subkey(&id) else { continue };
+            let Ok(command) = key
+                .open_subkey(r"shell\open\command")
+                .and_then(|k| k.get_value::<String, _>(""))
+            else {
+                continue;
+            };
+            let Some(exe) = exe_of_command(&command).filter(|p| std::path::Path::new(p).is_file()) else {
+                continue;
+            };
+            let name = key.get_value::<String, _>("").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone());
+            found.push(Browser { id, name, exe });
+        }
+    }
+    found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    found
+}
+
+#[cfg(not(windows))]
+fn installed_browsers() -> Vec<Browser> {
+    Vec::new()
+}
+
+/// The program in a registered command line: `"C:\a b\x.exe" -arg` or
+/// `C:\a\x.exe -arg`.
+#[cfg(windows)]
+fn exe_of_command(command: &str) -> Option<String> {
+    let command = command.trim();
+    if let Some(rest) = command.strip_prefix('"') {
+        return rest.split('"').next().map(str::to_string);
+    }
+    let end = command.to_lowercase().find(".exe")? + ".exe".len();
+    Some(command[..end].to_string())
+}
+
+/// Lists the browsers installed on this machine for the search's browser menu.
+#[tauri::command]
+fn list_browsers() -> Vec<Browser> {
+    installed_browsers()
+}
+
+/// Opens a web page in the chosen browser, or the default one when `browser`
+/// is None. Only https URLs, and only browsers from `installed_browsers`: the
+/// page builds both from the user's input, nothing else should reach the shell.
+#[tauri::command]
+fn open_url(app: AppHandle, url: String, browser: Option<String>) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("only https URLs can be opened".into());
+    }
+    let Some(id) = browser.filter(|id| id != "default") else {
+        return app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string());
+    };
+    let chosen = installed_browsers()
+        .into_iter()
+        .find(|b| b.id == id)
+        .ok_or_else(|| format!("browser not installed: {id}"))?;
+    std::process::Command::new(&chosen.exe)
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Memory in bytes used by this app: the shell, its WebView2 processes and
@@ -319,6 +421,115 @@ fn private_working_set(pid: u32) -> u64 {
     }
 }
 
+/// The Explorer icon for a path as a `data:image/png` URL, or None if Windows
+/// has none. Runs off the main thread: the shell may touch the disk.
+#[cfg(windows)]
+#[tauri::command]
+async fn file_icon(path: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || shell_icon_png(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(windows)]
+fn shell_icon_png(path: &str) -> Option<String> {
+    use base64::Engine;
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
+
+    unsafe {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut info = SHFILEINFOW::default();
+        let got = SHGetFileInfoW(
+            PCWSTR(wide.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut info),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if got == 0 || info.hIcon.is_invalid() {
+            return None;
+        }
+
+        let mut icon = ICONINFO::default();
+        let have_info = GetIconInfo(info.hIcon, &mut icon).is_ok();
+        let mut rgba = None;
+        if have_info {
+            let mut bmp = BITMAP::default();
+            GetObjectW(
+                icon.hbmColor.into(),
+                std::mem::size_of::<BITMAP>() as i32,
+                Some(&mut bmp as *mut _ as *mut _),
+            );
+            let (w, h) = (bmp.bmWidth, bmp.bmHeight);
+            if w > 0 && h > 0 {
+                let mut header = BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h, // top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                };
+                let mut buf = vec![0u8; (w * h * 4) as usize];
+                let dc = CreateCompatibleDC(None);
+                let lines = GetDIBits(
+                    dc,
+                    icon.hbmColor,
+                    0,
+                    h as u32,
+                    Some(buf.as_mut_ptr() as *mut _),
+                    &mut header as *mut _ as *mut BITMAPINFO,
+                    DIB_RGB_COLORS,
+                );
+                let _ = DeleteDC(dc);
+                if lines != 0 {
+                    // BGRA -> RGBA. Icons without an alpha channel come back
+                    // all zero there, so make those opaque.
+                    let opaque = buf.chunks_exact(4).all(|px| px[3] == 0);
+                    for px in buf.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                        if opaque {
+                            px[3] = 255;
+                        }
+                    }
+                    rgba = Some((w as u32, h as u32, buf));
+                }
+            }
+            let _ = DeleteObject(icon.hbmColor.into());
+            let _ = DeleteObject(icon.hbmMask.into());
+        }
+        let _ = DestroyIcon(info.hIcon);
+
+        let (w, h, buf) = rgba?;
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().ok()?.write_image_data(&buf).ok()?;
+        }
+        Some(format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(out)
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+async fn file_icon(_path: String) -> Option<String> {
+    None
+}
+
 #[cfg(not(windows))]
 #[tauri::command]
 fn memory_usage() -> u64 {
@@ -341,8 +552,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             resize_window,
             hide_window,
+            search_ready,
             backend_send,
             open_result,
+            open_url,
+            list_browsers,
+            file_icon,
             memory_usage
         ])
         .setup(|app| {
@@ -356,18 +571,12 @@ pub fn run() {
             })?;
 
             // Build the window now, hidden, so the first Alt+S only has to
-            // show it instead of waiting on WebView2 to start.
+            // show it instead of waiting on WebView2 to start. The page
+            // calls `search_ready` once loaded, which suspends it.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match create_search_window(&handle) {
-                    Ok(window) => {
-                        // Let the page load before asking WebView2 to trim memory.
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        if !window.is_visible().unwrap_or(true) {
-                            set_webview_low_memory(&window, true);
-                        }
-                    }
-                    Err(e) => log::error!("Failed to pre-create search window: {e}"),
+                if let Err(e) = create_search_window(&handle) {
+                    log::error!("Failed to pre-create search window: {e}");
                 }
             });
 
