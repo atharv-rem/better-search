@@ -1,0 +1,401 @@
+/* The rack, drawn after iso-glow: a hairline drawing on the panel, and one
+   accent that only the live parts wear. */
+.rack {
+  --body: #181818;
+  --deck: #222;
+  --line: #4a4a4a;
+  --detail: #2a2a2a;
+  --recess: #070707;
+  --ink: #8a8a8a;
+  --accent: #ff6b4a;
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.rk-svg {
+  display: block;
+  width: 100%;
+  max-width: 620px;
+  height: auto;
+  overflow: visible;
+}
+
+.rk-svg path,
+.rk-svg rect,
+.rk-svg ellipse,
+.rk-svg circle {
+  vector-effect: non-scaling-stroke;
+}
+
+.rk-face {
+  stroke: var(--line);
+  stroke-width: 0.8;
+  stroke-linejoin: round;
+}
+
+.rk-front {
+  fill: var(--body);
+}
+
+.rk-side {
+  fill: #111;
+}
+
+.rk-top {
+  fill: var(--deck);
+}
+
+.rk-plinth .rk-top,
+.rk-cap .rk-top {
+  fill: #292929;
+}
+
+.rk-lit .rk-front {
+  fill: #232323;
+}
+
+.rk-lit .rk-face {
+  stroke: var(--ink);
+}
+
+.rk-halo {
+  fill: var(--accent);
+  opacity: 0.3;
+}
+
+.rack[data-indexing] .rk-halo {
+  animation: rk-breathe 2.4s ease-in-out infinite;
+}
+
+.rk-detail {
+  fill: none;
+  stroke: var(--detail);
+  stroke-width: 0.8;
+  stroke-linecap: round;
+}
+
+.rk-recess {
+  fill: var(--recess);
+  stroke: var(--detail);
+  stroke-width: 0.7;
+}
+
+.rk-hot-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+.rack[data-indexing] .rk-hot-line {
+  animation: rk-breathe-line 1.2s ease-in-out infinite;
+}
+
+/* The machines */
+.rk-hot {
+  fill: var(--accent);
+}
+
+.rk-lamp {
+  fill: var(--detail);
+}
+
+.rk-lamp.rk-hot {
+  fill: var(--accent);
+}
+
+.rk-bay {
+  fill: #0e0e0e;
+  stroke: var(--detail);
+  stroke-width: 0.7;
+}
+
+/* Drive activity: dark unless the machine runs, then it flickers at its own rate. */
+.rk-act {
+  fill: var(--detail);
+}
+
+.rk-act[data-on] {
+  fill: var(--accent);
+  animation: rk-flicker 1.9s steps(1, end) infinite;
+}
+
+.rk-act[data-busy] {
+  animation-name: rk-flicker-fast;
+}
+
+.rk-fan-ring {
+  fill: #0b0b0b;
+  stroke: var(--line);
+  stroke-width: 0.7;
+}
+
+.rk-fan {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: rk-spin 1.7s linear infinite;
+}
+
+.rk-fan[data-off] {
+  animation: none;
+}
+
+.rk-blade {
+  fill: var(--ink);
+  stroke: none;
+}
+
+.rk-fan-hub {
+  fill: var(--line);
+}
+
+.rk-track {
+  fill: var(--detail);
+}
+
+.rk-fill {
+  fill: var(--ink);
+}
+
+.rk-fill.rk-hot {
+  fill: var(--accent);
+}
+
+/* Labels: the settings page's type and greys. */
+.rk-title,
+.rk-sub {
+  font-family: "Inter Tight", system-ui, sans-serif;
+  letter-spacing: 0;
+}
+
+.rk-title {
+  font-size: 11px;
+  font-weight: 500;
+  fill: #fff;
+}
+
+.rk-sub {
+  font-size: 10px;
+  fill: #71717a;
+}
+
+.rk-sub[data-warn] {
+  fill: #fcd34d;
+}
+
+.rk-num {
+  font-weight: 700;
+  fill: #fff;
+}
+
+.rk-sub .rk-num {
+  fill: #e4e4e7;
+}
+
+.rk-note[data-dim] .rk-title,
+.rk-note[data-dim] .rk-num {
+  fill: #71717a;
+}
+
+/* Leader: a hairline that fades in from the label to a pin on the unit. */
+.rk-leader {
+  fill: none;
+  stroke: url(#rk-leader);
+  stroke-width: 1;
+  stroke-linecap: round;
+  transition: stroke-width 150ms;
+}
+
+.rk-pin {
+  fill: #a1a1aa;
+  transition: fill 150ms;
+}
+
+.rk-pin-ring {
+  fill: none;
+  stroke: #52525b;
+  stroke-width: 0.8;
+  opacity: 0.7;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    transform 200ms,
+    stroke 150ms,
+    opacity 150ms;
+}
+
+/* The spotlight: the pointed-at unit is outlined in the accent, the rest sit back. */
+.rk-spot {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  opacity: 0;
+  transition: opacity 150ms;
+  pointer-events: none;
+}
+
+.rk-unit,
+.rk-note .rk-title,
+.rk-note .rk-sub {
+  transition:
+    opacity 180ms,
+    fill 150ms;
+}
+
+.rk-svg[data-hover] .rk-unit:not([data-active]) {
+  opacity: 0.55;
+}
+
+.rk-svg[data-hover] .rk-note:not([data-active]) .rk-title,
+.rk-svg[data-hover] .rk-note:not([data-active]) .rk-sub,
+.rk-svg[data-hover] .rk-note:not([data-active]) .rk-leader,
+.rk-svg[data-hover] .rk-note:not([data-active]) .rk-pin,
+.rk-svg[data-hover] .rk-note:not([data-active]) .rk-pin-ring {
+  opacity: 0.45;
+}
+
+.rk-note[data-active] .rk-spot {
+  opacity: 0.9;
+}
+
+.rk-note[data-active] .rk-leader {
+  stroke-width: 1.4;
+}
+
+.rk-note[data-active] .rk-pin {
+  fill: var(--accent);
+}
+
+.rk-note[data-active] .rk-pin-ring {
+  stroke: var(--accent);
+  opacity: 1;
+  transform: scale(1.25);
+}
+
+.rk-note[data-active] .rk-sub {
+  fill: #a1a1aa;
+}
+
+.rk-hit {
+  cursor: pointer;
+  outline: none;
+}
+
+.rk-hit path,
+.rk-hit rect {
+  fill: transparent;
+  stroke: none;
+}
+
+/* Locate: the unit's lamps blink together, like the identify light on a real server. */
+.rk-unit[data-locate] .rk-lamp,
+.rk-unit[data-locate] .rk-act {
+  fill: var(--accent);
+  animation: rk-locate 0.6s steps(1, end) infinite;
+}
+
+.rk-note[data-locate] .rk-spot {
+  opacity: 1;
+  animation: rk-locate-ring 0.6s steps(1, end) infinite;
+}
+
+@keyframes rk-locate {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.1;
+  }
+}
+
+@keyframes rk-locate-ring {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes rk-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Irregular on purpose: a disk is never busy at a steady beat. */
+@keyframes rk-flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  8% {
+    opacity: 0.1;
+  }
+  19% {
+    opacity: 0.9;
+  }
+  23% {
+    opacity: 0.1;
+  }
+  52% {
+    opacity: 0.85;
+  }
+  58% {
+    opacity: 0.1;
+  }
+  71% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0.1;
+  }
+}
+
+@keyframes rk-flicker-fast {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  14% {
+    opacity: 0.1;
+  }
+  27% {
+    opacity: 1;
+  }
+  38% {
+    opacity: 0.15;
+  }
+  55% {
+    opacity: 1;
+  }
+  63% {
+    opacity: 0.1;
+  }
+  82% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes rk-breathe {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes rk-breathe-line {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rk-fan,
+  .rk-act[data-on],
+  .rk-unit[data-locate] .rk-lamp,
+  .rk-unit[data-locate] .rk-act,
+  .rk-note[data-locate] .rk-spot,
+  .rack[data-indexing] .rk-halo,
+  .rack[data-indexing] .rk-hot-line {
+    animation: none;
+  }
+}

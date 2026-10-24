@@ -315,7 +315,7 @@ func (ix *Indexer) save(bulk *database.Bulk, s *mftScan, drive string, volIndex 
 	cargo := map[uint32]bool{}
 	for i := range entries {
 		e := &entries[i]
-		if e.flags&entryDir == 0 && strings.EqualFold(e.name, "Cargo.toml") {
+		if e.flags&entryDir == 0 && strings.EqualFold(s.name(e.name, e.nameLen), "Cargo.toml") {
 			cargo[e.parent] = true
 		}
 	}
@@ -356,16 +356,16 @@ func (ix *Indexer) save(bulk *database.Bulk, s *mftScan, drive string, volIndex 
 		switch {
 		case r == rootRecord:
 			ok = e.flags&entryInUse != 0
-		case r < firstUserRecord || e.flags&entryInUse == 0 || e.name == "":
+		case r < firstUserRecord || e.flags&entryInUse == 0 || e.nameLen == 0:
 			ok = false
 		default:
-			if ok, rules = accept(r, e.parent, e.name); ok {
+			if ok, rules = accept(r, e.parent, s.name(e.name, e.nameLen)); ok {
 				break
 			}
 			// A hard link: fall back to another name that's in an indexed folder.
 			for _, l := range s.links[r] {
-				if ok, rules = accept(r, l.parent, l.name); ok {
-					e.parent, e.name = l.parent, l.name
+				if ok, rules = accept(r, l.parent, s.name(l.name, l.nameLen)); ok {
+					e.parent, e.name, e.nameLen = l.parent, l.name, l.nameLen
 					break
 				}
 			}
@@ -392,10 +392,10 @@ func (ix *Indexer) save(bulk *database.Bulk, s *mftScan, drive string, volIndex 
 		e := &entries[r]
 		f := database.File{
 			ID:         base | int64(r),
-			Name:       e.name,
+			Name:       s.name(e.name, e.nameLen),
 			IsDir:      e.flags&entryDir != 0,
 			Size:       e.size,
-			ModifiedAt: e.mtime,
+			ModifiedAt: int64(e.mtime),
 		}
 		if r == rootRecord {
 			f.Name = drive

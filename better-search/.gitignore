@@ -22,3 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Agent skills (iso-glow, anatomy)
+.agents
+.claude/skills
+skills-lock.json
+iso-glow
+*.skill
+
+# Version and icon resources made by backend/scripts/build-backend.ps1
+backend/cmd/*/rsrc_windows_*.syso

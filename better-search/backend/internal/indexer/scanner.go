@@ -12,6 +12,8 @@ import (
 	"os"
 	"sort"
 	"unicode/utf16"
+	"unicode/utf8"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -56,13 +58,16 @@ type run struct {
 	clusters int64
 }
 
-// entry is what we keep per MFT record while scanning.
+// entry is what we keep per MFT record while scanning: millions of them, so
+// it's kept small. Its name sits in mftScan.names rather than in a string of
+// its own, which would add a 16-byte header and an allocation per record.
 type entry struct {
-	parent uint32
-	flags  uint8
-	size   int64
-	mtime  int64
-	name   string
+	size    int64
+	mtime   uint32 // unix seconds; 0 if unknown or before 1970 (see unixTime)
+	parent  uint32
+	name    uint32 // offset in mftScan.names
+	nameLen uint16 // in bytes; 0 until the record's name is read
+	flags   uint8
 }
 
 const (
@@ -72,13 +77,60 @@ const (
 
 // link is an extra name for a hard-linked file (same record, another folder).
 type link struct {
-	parent uint32
-	name   string
+	parent  uint32
+	name    uint32 // offset in mftScan.names
+	nameLen uint16
 }
 
 type mftScan struct {
 	entries []entry
 	links   map[uint32][]link
+	names   []byte // every entry's and link's name, as UTF-8, back to back
+}
+
+// Bytes of names to expect per record, for sizing mftScan.names up front
+// rather than growing it (each growth briefly holds the old copy too).
+const nameBytesPerRecord = 12
+
+func newScan(records int64) *mftScan {
+	return &mftScan{
+		entries: make([]entry, records),
+		links:   make(map[uint32][]link),
+		names:   make([]byte, 0, records*nameBytesPerRecord),
+	}
+}
+
+// name is a name stored in s.names, as a string viewing those bytes rather
+// than a copy. They never change once the scan has finished.
+func (s *mftScan) name(off uint32, n uint16) string {
+	if n == 0 {
+		return ""
+	}
+	return unsafe.String(&s.names[off], int(n))
+}
+
+// appendName decodes a UTF-16LE name from a record onto s.names, with no
+// copies along the way, and returns where it went. Unpaired surrogates
+// become U+FFFD, as utf16.Decode makes them.
+func (s *mftScan) appendName(b []byte) (uint32, uint16) {
+	off := len(s.names)
+	for i := 0; i+1 < len(b); i += 2 {
+		u := rune(le.Uint16(b[i:]))
+		switch {
+		case u < utf8.RuneSelf:
+			s.names = append(s.names, byte(u))
+		case utf16.IsSurrogate(u) && i+3 < len(b):
+			if r := utf16.DecodeRune(u, rune(le.Uint16(b[i+2:]))); r != utf8.RuneError {
+				s.names = utf8.AppendRune(s.names, r)
+				i += 2
+			} else {
+				s.names = utf8.AppendRune(s.names, utf8.RuneError)
+			}
+		default:
+			s.names = utf8.AppendRune(s.names, u) // a lone surrogate encodes as U+FFFD
+		}
+	}
+	return uint32(off), uint16(len(s.names) - off)
 }
 
 func openVolume(drive string) (*volume, error) {
@@ -255,10 +307,7 @@ func (v *volume) scan(progress func(done, total int64)) (*mftScan, error) {
 	}
 
 	total := v.recordCount()
-	s := &mftScan{
-		entries: make([]entry, total),
-		links:   make(map[uint32][]link),
-	}
+	s := newScan(total)
 
 	buf := make([]byte, readChunk)
 	var carry []byte // a record split across two runs
@@ -341,7 +390,7 @@ func (s *mftScan) parseRecord(rec []byte, recNo uint32) {
 		switch typ {
 		case attrStandardInfo:
 			if v := residentValue(a); !nonResident && len(v) >= 16 {
-				e.mtime = filetimeToUnix(le.Uint64(v[8:]))
+				e.mtime = unixTime(filetimeToUnix(le.Uint64(v[8:])))
 			}
 
 		case attrFileName:
@@ -353,12 +402,15 @@ func (s *mftScan) parseRecord(rec []byte, recNo uint32) {
 			if 66+nameLen*2 > len(v) {
 				return nil
 			}
-			name := decodeUTF16(v[66 : 66+nameLen*2])
 			parent := uint32(le.Uint64(v[0:]) & refMask)
-			if e.name == "" {
-				e.name, e.parent = name, parent
-			} else if name != e.name || parent != e.parent {
-				s.links[target] = append(s.links[target], link{parent, name})
+			off, n := s.appendName(v[66 : 66+nameLen*2])
+			switch {
+			case e.nameLen == 0:
+				e.name, e.nameLen, e.parent = off, n, parent
+			case parent != e.parent || s.name(off, n) != s.name(e.name, e.nameLen):
+				s.links[target] = append(s.links[target], link{parent, off, n})
+			default:
+				s.names = s.names[:off] // the name it already has: drop the copy
 			}
 
 		case attrData:
@@ -472,12 +524,10 @@ func readLE(b []byte) uint64 {
 	return v
 }
 
-func decodeUTF16(b []byte) string {
-	u := make([]uint16, len(b)/2)
-	for i := range u {
-		u[i] = le.Uint16(b[i*2:])
-	}
-	return string(utf16.Decode(u))
+// unixTime fits unix seconds in an entry: times before 1970 (corrupt, in
+// practice) become 0, unknown, and the latest it holds is in 2106.
+func unixTime(sec int64) uint32 {
+	return uint32(min(max(sec, 0), 1<<32-1))
 }
 
 // filetimeToUnix converts Windows FILETIME (100ns ticks since 1601) to unix seconds.

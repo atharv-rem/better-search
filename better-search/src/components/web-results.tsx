@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { GlobeSimpleIcon } from "@phosphor-icons/react";
+import { imageCache } from "@/lib/image-cache";
+import { GlobeSimpleIcon } from "@/lib/phosphor";
 import { cn } from "@/lib/utils";
 import { fontWeights } from "@/lib/font-weight";
 import { useShape } from "@/lib/shape-context";
@@ -27,9 +27,9 @@ function siteOf(url: string) {
   }
 }
 
-// Favicon data URLs by site (null: it has none). Promises are cached so
-// results from the same site share one lookup.
-const favicons = new Map<string, Promise<string | null>>();
+// Favicons by site (null: it has none), so results from the same site share
+// one lookup. Rust keeps them too, so an evicted one comes back quickly.
+const favicons = imageCache("favicon", 100);
 
 function loadFavicon(url: string) {
   let site: string;
@@ -38,12 +38,7 @@ function loadFavicon(url: string) {
   } catch {
     return Promise.resolve(null);
   }
-  let icon = favicons.get(site);
-  if (!icon) {
-    icon = invoke<string | null>("favicon", { url }).catch(() => null);
-    favicons.set(site, icon);
-  }
-  return icon;
+  return favicons(site, { url });
 }
 
 /** The site's favicon, or a globe until (or unless) it loads. */

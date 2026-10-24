@@ -1,389 +1,182 @@
 # Better Search
 
-A fast, lightweight Windows file search application built with **Tauri, Go, SQLite, and a modern web frontend**.
+A fast file search for Windows. Press **Alt+S** anywhere, type part of a file name, and press **Enter** to open it.
 
-Better Search runs quietly in the background and provides an instant search interface when you press **`Alt + S`**. Instead of scanning your filesystem every time you search, Better Search maintains a local SQLite index of file metadata, allowing results to appear almost instantly.
+Better Search reads your drives' file list once and keeps it up to date in the background. Searching never scans your disk, so results appear while you type, and the app uses about 10–20 MB of RAM while it waits in the background.
 
 ## Features
 
-* **Instant search** — Search indexed files without repeatedly scanning the filesystem.
-* **Local indexing** — File metadata is stored in a local SQLite database.
-* **Fast backend** — Go handles indexing, filesystem operations, and search logic.
-* **Lightweight desktop app** — Tauri provides a small native application footprint.
-* **Global keyboard shortcut** — Press `Alt + S` to open the search interface.
-* **Background operation** — The application can remain running quietly in the system tray.
-* **Incremental updates** — Filesystem changes can be detected and reflected in the index.
-* **SQLite-powered search** — Fast local queries without requiring an external database.
-* **Autostart support** — Optionally start Better Search automatically with Windows.
-* **Window state persistence** — Preserve relevant window configuration between launches.
-* **Single-instance protection** — Prevent multiple Better Search processes from running simultaneously.
-* **Application updates** — Built-in updater support for distributing new versions.
+- **Instant file search.** Finds any file or folder whose name contains what you typed, on every NTFS drive. Several words narrow the search (`invoice 2024`).
+- **Smart ranking.** Exact names come first, then apps, shortcuts and folders, then other files. Files you open often rise to the top.
+- **Previews.** A small preview of the highlighted result: thumbnails of photos, videos, PDFs and Office files, the start of text and code files, and what's inside folders.
+- **Type filters.** Show only folders, documents, images, videos, audio, code, archives or apps.
+- **Web search.** Start with `/` (`/ weather tomorrow`) to search the web in the browser of your choice, using Google, Bing, DuckDuckGo, Brave or your own search URL. With your own API key for Exa, Firecrawl, TinyFish or Context.dev, results show right in the search window.
+- **Always up to date.** A watcher applies file changes as they happen, and on start-up it catches up on anything that changed while the app was closed.
+- **Recent searches** under the empty search box (optional).
+- **Stays out of the way.** Runs in the background, can start with Windows, and only one copy ever runs.
 
-## Architecture
+## Using it
 
-Better Search is split into two main layers:
+| Key | Action |
+|---|---|
+| **Alt+S** | Open or close the search (you can change it in Settings) |
+| **↑ / ↓** | Move through the results |
+| **Enter** | Open the highlighted result |
+| **Ctrl+Enter** | Show it in File Explorer instead (you can swap these two in Settings) |
+| **Tab / Shift+Tab** | Cycle the type filters; in web search, cycle the browser |
+| **Esc** | Close the search |
+| `/` + text | Search the web |
 
-```text
-┌──────────────────────────────────────────────┐
-│                 Better Search                │
-├──────────────────────────────────────────────┤
-│                                              │
-│   Tauri Desktop Application                  │
-│   ┌──────────────────────────────────────┐   │
-│   │ Frontend                             │   │
-│   │                                      │   │
-│   │ Search UI                            │   │
-│   │ Results                              │   │
-│   │ Keyboard interaction                 │   │
-│   └──────────────────┬───────────────────┘   │
-│                      │                       │
-│                      ▼                       │
-│   ┌──────────────────────────────────────┐   │
-│   │ Tauri Layer                         │   │
-│   │                                      │   │
-│   │ Commands / Plugins / Window Control │   │
-│   └──────────────────┬───────────────────┘   │
-│                      │                       │
-│                      ▼                       │
-│   Go Backend                              │
-│   ┌──────────────────────────────────────┐   │
-│   │ File Indexer                         │   │
-│   │ Search Engine                        │   │
-│   │ Filesystem Watcher (own process)     │   │
-│   │ Database Layer                       │   │
-│   └──────────────────┬───────────────────┘   │
-│                      │                       │
-│                      ▼                       │
-│              SQLite Database                 │
-│                                              │
-└──────────────────────────────────────────────┘
-```
+The first time you run it, Better Search asks for administrator permission to read your drives' file list. That takes about ten seconds. Normal use after that needs no special permission.
 
-### Why Tauri + Go?
+### Settings
 
-**Tauri** is responsible for the desktop application layer and user interface, while **Go** handles the computationally intensive backend work.
+Open Settings with the gear icon in the search bar. There you can:
 
-This separation keeps the UI responsive while allowing the backend to efficiently handle:
+- change the shortcut, and choose whether the app starts with Windows;
+- choose how many results to show, whether to show previews, and whether to remember recent searches;
+- leave out drives or folders from the index, or rebuild it;
+- pick the web search engine and browser, and add search provider API keys.
 
-* Filesystem traversal
-* File indexing
-* Filesystem change detection
-* Database operations
-* Search queries
-* Metadata processing
+## Performance
 
-## Project Structure
+Measured on a release build with an index of 213,000 files:
+
+| | Result |
+|---|---|
+| RAM while in the background | 9–17 MB |
+| RAM while searching (with previews) | about 105 MB |
+| Alt+S until the window shows | about 30 ms |
+| Typing until results show | 120–170 ms, including a deliberate 100 ms pause while you type |
+| Full index of a drive (2 million file records) | about 10 seconds |
+
+## Privacy
+
+Everything stays on your PC. The file index is a local database, and file names are never sent anywhere.
+
+The only times the app goes online:
+- **Web searches you start.** These go to your browser, or to the provider whose API key you added.
+- **Website icons** for web results. These are fetched from each website directly, not through a third-party icon service.
+
+API keys are stored in Windows Credential Manager.
+
+## How it works
+
+Better Search is a [Tauri](https://tauri.app) app: a Rust shell with a React interface drawn by WebView2. Small Go programs do the indexing and searching against a SQLite database.
 
 ```text
-better-search/
-│
-├── src/                         # Frontend application
-│
-├── src-tauri/                   # Tauri application
-│   ├── src/
-│   ├── capabilities/
-│   ├── icons/
-│   ├── tauri.conf.json
-│   └── Cargo.toml
-│
-├── backend/                     # Go backend
-│   ├── cmd/
-│   ├── internal/
-│   ├── go.mod
-│   └── go.sum
-│
-├── package.json
-├── package-lock.json
-└── README.md
+                 Better Search (Rust shell)
+                 ├─ search window and Settings (React, in WebView2)
+                 ├─ icons, previews and thumbnails (Windows Shell)
+                 │
+   JSON lines    │
+   over stdin/   ├─ Search helper (Go) ───── searches ────► SQLite index
+   stdout        │      └─ starts as admin: Indexer (Go) ── builds ──►    (FTS5 trigram)
+                 └─ File watcher (Go) ────── updates ─────►
 ```
 
-The exact structure may evolve as the project grows.
+- **Indexer.** Reads each NTFS drive's Master File Table directly. That's far faster than walking folders, but it needs administrator rights, so it runs as its own short-lived program behind a UAC prompt. It skips caches and build folders (such as `node_modules`, `.git`, browser caches and `WinSxS`), plus any folders you exclude.
+- **Search helper.** Answers searches with a trigram full-text index, so it can find any part of a name. It frees its memory whenever the window is hidden.
+- **File watcher.** Windows tells it about each change (`ReadDirectoryChangesW`), so it uses no CPU between changes. On start-up it checks folder modification times to pick up changes made while the app was closed.
 
-## Search Flow
+### Processes
 
-When the user presses `Alt + S`:
+In Task Manager, the app shows as:
 
-```text
-User presses Alt + S
-        │
-        ▼
-Search window opens
-        │
-        ▼
-User enters query
-        │
-        ▼
-Frontend sends query
-        │
-        ▼
-Go backend
-        │
-        ▼
-SQLite search
-        │
-        ▼
-Ranked results
-        │
-        ▼
-Results displayed
-```
+| Name | Program | What it does |
+|---|---|---|
+| Better Search | `better-search.exe` | The app itself |
+| Better Search: Search helper | `better-search-helper.exe` | Answers searches |
+| Better Search: File watcher | `better-search-watcher.exe` | Keeps the index up to date |
+| Better Search: Indexer | `better-search-indexer.exe` | Builds the full index; runs only while indexing |
+| Microsoft Edge WebView2 | `msedgewebview2.exe` | Draws the window (several processes) |
 
-The key design principle is that **search should not require a full filesystem scan**.
+### Where it keeps its files
 
-The filesystem is indexed ahead of time, so a normal search becomes primarily a database query rather than an expensive filesystem operation.
+| What | Where |
+|---|---|
+| File index | `%LOCALAPPDATA%\better-search\index.db` |
+| Logs | `%LOCALAPPDATA%\better-search\logs\better-search.log` |
+| Settings and recent searches | `%APPDATA%\better-search\` |
+| Search provider API keys | Windows Credential Manager |
 
-## Indexing
+## Building from source
 
-Better Search maintains an index containing file information such as:
+### Requirements
 
-```text
-Path
-Filename
-Extension
-Directory
-Size
-Created time
-Modified time
-Other searchable metadata
-```
+- Windows 10 or 11
+- [Node.js](https://nodejs.org) 20 or newer
+- [Rust](https://rustup.rs) (stable)
+- [Go](https://go.dev) 1.26 or newer
+- The [Tauri prerequisites for Windows](https://tauri.app/start/prerequisites/): Microsoft C++ Build Tools and the WebView2 runtime (built into Windows 11)
 
-The initial index can scan the configured filesystem locations.
+### Steps
 
-After the initial scan, a small background watcher (`better-search-backend -watch`, started with the app) keeps the index current. Windows pushes each change to it through `ReadDirectoryChangesW`, so nothing polls or rescans: it sleeps until a file changes, applies the change, and sleeps again. It skips the same excluded folders as the full index, and it needs no administrator rights.
-
-Conceptually:
-
-```text
-Initial scan
-     │
-     ▼
-Build SQLite index
-     │
-     ▼
-Start filesystem watcher
-     │
-     ├── File created ──────► Add to index
-     │
-     ├── File modified ─────► Update index
-     │
-     ├── File renamed ──────► Update index
-     │
-     └── File deleted ──────► Remove from index
-```
-
-This allows the database to remain synchronized without repeatedly rebuilding the entire index.
-
-Limits: changes made while Better Search isn't running are not seen until the next full index, and if Windows drops events during a very large burst of changes the index is flagged as stale (`stale` in the status message) so it can be rebuilt.
-
-## Technology Stack
-
-### Desktop
-
-* **Tauri 2**
-* Rust
-* Tauri plugins
-
-### Backend
-
-* **Go**
-* Filesystem APIs
-* `ReadDirectoryChangesW` (filesystem change notifications)
-* SQLite
-
-### Database
-
-* **SQLite**
-
-SQLite is used because Better Search is a local desktop application and does not require a separate database server.
-
-### Tauri Plugins
-
-The project can use Tauri plugins for functionality such as:
-
-* Shell integration
-* Single-instance behavior
-* SQLite access
-* Application updates
-* File uploads
-* Window state persistence
-* Autostart
-
-## Requirements
-
-Before running the project, install:
-
-* Node.js
-* npm
-* Rust
-* Tauri CLI
-* Go
-
-For Windows development, ensure the required Tauri Windows development dependencies are installed as described in the Tauri documentation.
-
-## Getting Started
-
-Clone the repository:
-
-```bash
-git clone <repository-url>
+```powershell
 cd better-search
-```
-
-Install frontend dependencies:
-
-```bash
 npm install
-```
 
-Install Go dependencies:
+# Build the three Go programs into src-tauri\binaries.
+# Run this again whenever you change code under backend\.
+powershell -File backend\scripts\build-backend.ps1
 
-```bash
-cd backend
-go mod download
-cd ..
-```
-
-## Development
-
-Start the Tauri development environment:
-
-```bash
+# Run in development, with live reload of the interface
 npm run tauri dev
-```
 
-The development application should launch with the frontend and Tauri environment connected to the backend.
-
-If the Go backend is run independently during development:
-
-```bash
-cd backend
-go run .
-```
-
-The exact backend entry point may differ depending on the final project structure.
-
-## Building
-
-Build the production application with:
-
-```bash
+# Or build the release app and installer (in src-tauri\target\release\bundle)
 npm run tauri build
 ```
 
-Tauri will create the appropriate Windows application artifacts.
+### Tests
 
-## Design Goals
-
-Better Search is designed around several principles.
-
-### 1. Speed
-
-Search should feel instantaneous.
-
-The application should avoid expensive operations during normal searches and instead rely on a continuously maintained local index.
-
-### 2. Low Resource Usage
-
-The application is intended to stay running in the background without consuming significant CPU or memory while idle.
-
-Heavy work such as indexing should happen only when necessary.
-
-### 3. Local-First
-
-File information remains on the user's machine.
-
-The core search functionality does not require sending filesystem information to a remote server.
-
-### 4. Minimal UI
-
-The primary interface is intentionally small.
-
-The intended interaction is:
-
-```text
-Alt + S
-   ↓
-Type
-   ↓
-Find
-   ↓
-Open
+```powershell
+cd better-search\backend
+go test ./...
 ```
 
-The application should stay out of the user's way until it is needed.
+The repository also has two benchmarks. They skip themselves unless you turn them on:
 
-## Planned Improvements
+```powershell
+# Search speed, against a copy of a real index
+$env:BETTER_SEARCH_BENCH_DB = "C:\path\to\copy\index.db"
+go test ./internal/search -bench .
 
-Potential future improvements include:
-
-* Smarter result ranking
-* Fuzzy filename matching
-* Search filters
-* File-type filters
-* Folder-specific searches
-* Recent searches
-* Search history
-* Content indexing
-* Application indexing
-* Better Windows integration
-* Improved keyboard navigation
-* Index performance optimizations
-* Background indexing prioritization
-* Configurable indexed locations
-* Advanced search operators
-
-## Performance Philosophy
-
-The main performance goal is:
-
-> **Do the expensive work once, then make searching cheap.**
-
-Instead of:
-
-```text
-Search
-  ↓
-Scan filesystem
-  ↓
-Check thousands/millions of files
-  ↓
-Return results
+# Full-index memory and speed, on a synthetic 2-million-record drive
+$env:BETTER_SEARCH_BENCH_INDEX = "1"
+go test ./internal/indexer -run IndexBench -v
 ```
 
-Better Search aims for:
+## Project layout
 
 ```text
-Filesystem
-    ↓
-Background indexing
-    ↓
-SQLite
-    ↓
-Search
-    ↓
-Immediate results
+better-search/
+├── src/                     React interface
+│   ├── App.tsx              the search window
+│   ├── settings/            the Settings window
+│   ├── onboarding/          the first-run screen
+│   ├── components/          results, previews, search box, menus
+│   ├── lib/                 settings, backend client, icons
+│   └── assets/icons/        Phosphor icons, as SVG files
+├── src-tauri/               Rust shell
+│   ├── src/lib.rs           windows, shortcut, sidecars, icons and previews
+│   ├── src/web_search.rs    web search providers and favicons
+│   ├── src/settings.rs      settings file and drive list
+│   └── binaries/            the built Go programs (from build-backend.ps1)
+└── backend/                 Go programs
+    ├── cmd/helper/          Search helper
+    ├── cmd/watcher/         File watcher
+    ├── cmd/indexer/         Indexer
+    └── internal/            database, indexer, watcher, search
 ```
 
-This architecture makes the cost of a search largely independent of the total number of files on the system.
+### Adding an icon
 
-## Contributing
-
-Contributions, bug reports, performance improvements, and feature ideas are welcome.
-
-When contributing, keep the project's primary goals in mind:
-
-* Fast
-* Lightweight
-* Local-first
-* Reliable
-* Simple
-
-## License
-
-This project is licensed under the terms specified in the repository's license file.
+Icons come from [Phosphor](https://phosphoricons.com). To add one:
+1. Copy its SVG file from the `@phosphor-icons/core` package (`assets/<weight>/`) into `src/assets/icons/`, keeping its file name.
+2. Add a line for it in `src/lib/phosphor.tsx`.
 
 ## Status
 
-Better Search is currently under active development.
+Early development (version 0.1.0). It works day to day, but settings, file formats and internals may still change. Self-updating only works once an update server is set up in `tauri.conf.json`.
 
-The architecture and APIs may change as indexing, search ranking, Windows integration, and the desktop experience continue to evolve.
+No license has been chosen yet.

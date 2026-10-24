@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@/lib/phosphor";
 import { GlobalSearchIcon } from "@/components/global-search-icon";
 import { RamIcon, TimeIcon } from "@/components/stat-icons";
 import { BrowserIcon, DEFAULT_BROWSER, useInstalledBrowsers } from "@/components/browser-icon";
@@ -13,12 +13,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { InputMessage } from "@/components/ui/input-message";
+import { SearchBox } from "@/components/search-box";
 import { PreviewPanel } from "@/components/preview-panel";
 import { SearchResults } from "@/components/search-results";
 import { WebResults } from "@/components/web-results";
 import { TypeFilter } from "@/components/type-filter";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
+import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
 import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchUrl, type Settings } from "@/lib/settings";
@@ -204,6 +205,12 @@ function App() {
   useEffect(() => {
     if (!showRecentWeb) setRecentWebActive(null);
   }, [showRecentWeb]);
+  // File searches are listed the same way, in a panel under the empty box.
+  const showRecentFiles = ready && rememberRecent && query === "" && recentFiles.length > 0;
+  const [recentFilesActive, setRecentFilesActive] = useState<number | null>(null);
+  useEffect(() => {
+    if (!showRecentFiles) setRecentFilesActive(null);
+  }, [showRecentFiles]);
   // With a provider, web searches show their results here; without, they open
   // in the browser.
   const provider = providerOf(settings.web.provider);
@@ -264,8 +271,8 @@ function App() {
     };
   }, []);
 
-  // Window shown (Alt+S): focus the search bar and ask the freshly started
-  // backend whether the index exists yet. Rust sends "search-shown" on every
+  // Window shown (Alt+S): focus the search bar and ask the backend whether
+  // the index exists yet. Rust sends "search-shown" on every
   // show; focus events alone miss it when the webview still counts as focused.
   useEffect(() => {
     const focusSearch = () => searchRef.current?.querySelector("textarea")?.focus();
@@ -306,7 +313,7 @@ function App() {
           return { kind: "ready" };
         });
       })
-      .catch(() => {}); // backend stopped (window hidden again)
+      .catch(() => {}); // backend exited; Rust restarts it on the next show
   }, [shownAt]);
 
   useEffect(
@@ -346,8 +353,9 @@ function App() {
 
   const openResult = useCallback(async (r: SearchResult, reveal: boolean) => {
     remember(queryRef.current);
-    // Record the open before hiding: hiding stops the backend.
-    await Promise.race([backend.markOpened(r.id).catch(() => {}), new Promise((ok) => setTimeout(ok, 300))]);
+    // Recorded for ranking without waiting: hiding only trims the backend,
+    // which still answers it.
+    backend.markOpened(r.id).catch(() => {});
     try {
       await invoke("open_result", { path: r.path, reveal });
     } catch (err) {
@@ -403,6 +411,12 @@ function App() {
     else searchWeb(settings.web, q, browser.id).catch((err) => console.error("Failed to open browser:", err));
   };
 
+  /** Fills a recent file search into the box, which searches it. */
+  const runRecentFile = (text: string) => {
+    setQuery(text);
+    searchRef.current?.querySelector("textarea")?.focus();
+  };
+
   const openWebResult = (r: WebResult) =>
     invoke("open_url", { url: r.url, browser: browser.id })
       .then(() => hideWindow())
@@ -419,9 +433,25 @@ function App() {
   const handleKeyDownCapture = (e: ReactKeyboardEvent) => {
     // The browser menu renders in a portal, but its keys bubble through here.
     if ((e.target as HTMLElement).closest('[data-slot="dropdown-menu-content"]')) return;
-    // The empty box's arrows, Enter and Escape belong to the recent searches
-    // listed under it (InputMessage's suggestions).
-    if (query === "" && e.key !== "Tab") return;
+    if (query === "" && e.key !== "Tab") {
+      // The recent searches listed under the empty box: ArrowDown enters the
+      // list, ArrowUp walks back up and out (with nothing highlighted it
+      // still recalls history), Enter runs the highlighted one and Escape
+      // drops the highlight.
+      if (!showRecentFiles || e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        e.stopPropagation();
+        setRecentFilesActive((i) => (i === null ? 0 : Math.min(i + 1, recentFiles.length - 1)));
+      } else if (recentFilesActive !== null && (e.key === "ArrowUp" || e.key === "Enter" || e.key === "Escape")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "ArrowUp") setRecentFilesActive(recentFilesActive === 0 ? null : recentFilesActive - 1);
+        else if (e.key === "Enter") runRecentFile(recentFiles[recentFilesActive]);
+        else setRecentFilesActive(null);
+      }
+      return;
+    }
     if (webQuery !== null) {
       if (e.key === "Tab") {
         // Cycle the browser to search in; Shift+Tab goes back.
@@ -452,19 +482,7 @@ function App() {
       } else if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        if (!webQuery) {
-          if (showRecentWeb && recentWebActive !== null) runRecentWeb(recentWeb[recentWebActive]);
-          return;
-        }
-        remember(query);
-        // Ctrl+Enter searches in the browser even with a provider.
-        if (!provider || e.ctrlKey) {
-          searchWeb(settings.web, webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
-        } else if (webResults.length) {
-          openWebResult(webResults[webActive ?? 0]);
-        } else if (webShown?.kind !== "loading") {
-          searchProvider(webQuery);
-        }
+        submit(e.ctrlKey);
       }
       return;
     }
@@ -487,9 +505,31 @@ function App() {
     } else if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
-      const r = visible[activeIndex ?? 0];
-      if (r) openResult(r, e.ctrlKey !== enterReveals);
+      submit(e.ctrlKey);
     }
+  };
+
+  /** Enter, or the bar's arrow button: opens the highlighted result, or runs
+   *  the web search. `ctrl` is Ctrl+Enter (or Ctrl+click). */
+  const submit = (ctrl: boolean) => {
+    if (webQuery !== null) {
+      if (!webQuery) {
+        if (showRecentWeb && recentWebActive !== null) runRecentWeb(recentWeb[recentWebActive]);
+        return;
+      }
+      remember(query);
+      // Ctrl+Enter searches in the browser even with a provider.
+      if (!provider || ctrl) {
+        searchWeb(settings.web, webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
+      } else if (webResults.length) {
+        openWebResult(webResults[webActive ?? 0]);
+      } else if (webShown?.kind !== "loading") {
+        searchProvider(webQuery);
+      }
+      return;
+    }
+    const r = visible[activeIndex ?? 0];
+    if (r) openResult(r, ctrl !== enterReveals);
   };
 
   // Hide window when pressing Escape (an open menu takes it first)
@@ -502,7 +542,7 @@ function App() {
   }, []);
 
   const showResults = ready && results.length > 0;
-  const showPanel = webQuery !== null || showResults || (index.kind !== "ready" && index.kind !== "checking");
+  const showPanel = webQuery !== null || showResults || showRecentFiles || (index.kind !== "ready" && index.kind !== "checking");
 
   return (
     // The window is sized to this frame (see the resize effect), not the
@@ -542,17 +582,16 @@ function App() {
             </span>
           </div>
         </div>
-        <InputMessage
+        <SearchBox
           ref={searchRef}
-          size="compact"
           maxRows={4}
           value={query}
           onValueChange={setQuery}
           placeholder="what should i look for you?"
-          suggestions={rememberRecent ? recentFiles : undefined}
           className="gap-0! bg-black! p-[5px]! text-white"
           style={{ boxShadow: panelShadow }}
-          textareaProps={{ className: "placeholder:text-zinc-400!" }}
+          textareaClassName="placeholder:text-zinc-400!"
+          onSubmit={submit}
           rightSlot={
             <Button
               type="button"
@@ -645,8 +684,11 @@ function App() {
                   </DropdownMenu>
                 </div>
                 {showRecentWeb && (
-                  <RecentWebSearches
+                  <RecentSearches
+                    label="Recent web searches"
                     searches={recentWeb}
+                    display={(s) => s.slice(1)}
+                    bordered
                     active={recentWebActive}
                     onActiveChange={setRecentWebActive}
                     onPick={runRecentWeb}
@@ -661,7 +703,9 @@ function App() {
                       </div>
                     ) : webShown.kind === "error" ? (
                       <p role="alert" className="p-3 text-[12px] leading-4 text-zinc-400">
-                        {webShown.message} <span className="text-zinc-500">Ctrl+Enter searches in your browser.</span>
+                        {webShown.message} <span className="text-zinc-500">
+                          <Shortcut keys={["Ctrl", "Enter"]} /> searches in your browser.
+                        </span>
                       </p>
                     ) : webResults.length ? (
                       <WebResults
@@ -686,6 +730,14 @@ function App() {
                 onOpen={(r, ctrl) => openResult(r, ctrl !== enterReveals)}
                 maxHeight={resultsMaxHeight()}
               />
+            ) : showRecentFiles ? (
+              <RecentSearches
+                label="Recent searches"
+                searches={recentFiles}
+                active={recentFilesActive}
+                onActiveChange={setRecentFilesActive}
+                onPick={runRecentFile}
+              />
             ) : (
               <IndexPanel state={index} onAllow={requestPermission} />
             )}
@@ -699,16 +751,25 @@ function App() {
   );
 }
 
-/** Recent web searches, under the web-search row while only "/" is typed.
+/** Recent searches in a panel of their own: file searches under the empty
+ *  box, web searches under the web-search row while only "/" is typed.
  *  Picking one runs it again. */
-function RecentWebSearches({
+function RecentSearches({
+  label,
   searches,
+  display = (s) => s,
+  bordered = false,
   active,
   onActiveChange,
   onPick,
 }: {
-  /** Newest first, each with its "/". */
+  label: string;
+  /** Newest first. */
   searches: string[];
+  /** What a search reads as in the list (web searches drop their "/"). */
+  display?: (search: string) => string;
+  /** A hairline above, when it sits under another row. */
+  bordered?: boolean;
   active: number | null;
   onActiveChange: (index: number | null) => void;
   onPick: (search: string) => void;
@@ -716,9 +777,9 @@ function RecentWebSearches({
   return (
     <div
       role="listbox"
-      aria-label="Recent web searches"
+      aria-label={label}
       onMouseLeave={() => onActiveChange(null)}
-      className="flex flex-col border-t border-white/[0.06] p-1.5"
+      className={cn("flex flex-col p-1.5", bordered && "border-t border-white/[0.06]")}
     >
       {searches.map((s, i) => (
         <div
@@ -733,7 +794,7 @@ function RecentWebSearches({
           )}
         >
           <ClockCounterClockwiseIcon size={ROW_ICON_SIZE} className="shrink-0" />
-          <span className="truncate">{s.slice(1)}</span>
+          <span className="truncate">{display(s)}</span>
         </div>
       ))}
     </div>

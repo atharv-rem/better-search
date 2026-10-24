@@ -1,9 +1,9 @@
 package indexer
 
-// Indexing runs in its own elevated copy of the backend ("-index-only"):
-//   - only that process needs admin rights, so the search sidecar never does;
-//   - it keeps running when Tauri stops the sidecar (window hidden), and the
-//     next sidecar picks its progress back up from the report file.
+// Indexing runs in its own elevated program (better-search-indexer.exe):
+//   - only that process needs admin rights, so the search helper never does;
+//   - it keeps running if the search helper exits, and the next one picks its
+//     progress back up from the report file.
 //
 // The child holds index.lock open with no sharing while it runs, and writes
 // its progress to index-progress.json next to the database.
@@ -40,7 +40,7 @@ func reportPath(dbPath string) string {
 }
 func lockPath(dbPath string) string { return filepath.Join(filepath.Dir(dbPath), "index.lock") }
 
-// RunChild is the body of the elevated "-index-only" process. Returns the exit
+// RunChild is the body of the elevated indexer program (cmd/indexer). Returns the exit
 // code. settingsPath is the app's settings.json, for the user's exclusions.
 func RunChild(dbPath, settingsPath string) int {
 	lockName, _ := windows.UTF16PtrFromString(lockPath(dbPath))
@@ -140,19 +140,24 @@ const (
 
 var procShellExecuteEx = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
 
-// LaunchElevated starts "-index-only" as administrator. Windows shows the UAC
-// prompt and this blocks until the user answers it. Returns the process handle.
+// IndexerExe is the indexer program, installed next to the search helper.
+const IndexerExe = "better-search-indexer.exe"
+
+// LaunchElevated starts the indexer as administrator. Windows shows the UAC
+// prompt (naming the indexer) and this blocks until the user answers it.
+// Returns the process handle.
 func LaunchElevated(dbPath, settingsPath string) (windows.Handle, error) {
-	exe, err := os.Executable()
+	self, err := os.Executable()
 	if err != nil {
 		return 0, err
 	}
+	exe := filepath.Join(filepath.Dir(self), IndexerExe)
 	// A leftover "done" report from the last run must not be mistaken for this one.
 	os.Remove(reportPath(dbPath))
 
 	verb, _ := windows.UTF16PtrFromString("runas")
 	file, _ := windows.UTF16PtrFromString(exe)
-	args := syscall.EscapeArg("-index-only") + " -db " + syscall.EscapeArg(dbPath)
+	args := "-db " + syscall.EscapeArg(dbPath)
 	if settingsPath != "" {
 		args += " -settings " + syscall.EscapeArg(settingsPath)
 	}

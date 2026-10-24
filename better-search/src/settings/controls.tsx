@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon } from "@/lib/phosphor";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,11 +15,11 @@ import { cn } from "@/lib/utils";
 export function Group({ title, footer, children }: { title?: string; footer?: ReactNode; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
-      {title && <h2 className="px-1 text-[12px] leading-4 font-medium text-zinc-500">{title}</h2>}
+      {title && <h2 className="px-1 text-[11px] leading-4 font-medium text-zinc-500">{title}</h2>}
       <div className="flex flex-col divide-y divide-white/[0.06] rounded-xl bg-[#0c0c0c] ring-1 ring-white/[0.07]">
         {children}
       </div>
-      {footer && <p className="px-1 text-[12px] leading-4 text-zinc-500">{footer}</p>}
+      {footer && <p className="px-1 text-[11px] leading-4 text-zinc-500">{footer}</p>}
     </section>
   );
 }
@@ -39,13 +39,13 @@ export function Row({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-13 items-center gap-3 px-4 py-2.5">
+    <div className="flex min-h-11 items-center gap-3 px-3.5 py-2">
       {icon && <span className="shrink-0 text-zinc-400">{icon}</span>}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-[13px] leading-4 text-white">{label}</span>
-        {description && <span className="text-[12px] leading-4 text-zinc-500">{description}</span>}
+        <span className="truncate text-[12px] leading-4 text-white">{label}</span>
+        {description && <span className="text-[11px] leading-4 text-zinc-500">{description}</span>}
         {error && (
-          <span role="alert" className="text-[12px] leading-4 text-red-400">
+          <span role="alert" className="text-[11px] leading-4 text-red-400">
             {error}
           </span>
         )}
@@ -106,7 +106,7 @@ export function Select<T extends string | number>({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={label}
-        className="flex h-7 max-w-52 items-center gap-2 rounded-md bg-white/[0.07] px-2.5 text-[12px] leading-4 text-white outline-hidden transition-colors hover:bg-white/[0.11] focus-visible:ring-1 focus-visible:ring-[#6B97FF] data-[state=open]:bg-white/[0.11]"
+        className="flex h-7 max-w-52 items-center gap-2 rounded-md bg-white/[0.07] px-2.5 text-[11px] leading-4 text-white outline-hidden transition-colors hover:bg-white/[0.11] focus-visible:ring-1 focus-visible:ring-[#6B97FF] data-[state=open]:bg-white/[0.11]"
       >
         {current?.icon}
         <span className="truncate">{current?.label}</span>
@@ -116,7 +116,7 @@ export function Select<T extends string | number>({
         {options.map((o) => (
           <DropdownMenuItem
             key={o.value}
-            className="gap-2 py-1 text-[12px] leading-4 text-white focus:text-white"
+            className="gap-2 py-1 text-[11px] leading-4 text-white focus:text-white"
             onSelect={() => onChange(o.value)}
           >
             {o.icon}
@@ -151,7 +151,7 @@ export function Segmented<T extends string>({
           aria-checked={o.value === value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "h-6 rounded-[5px] px-2.5 text-[12px] leading-4 transition-colors",
+            "h-6 rounded-[5px] px-2.5 text-[11px] leading-4 transition-colors",
             o.value === value ? "bg-white text-black" : "text-zinc-300 hover:text-white"
           )}
         >
@@ -172,21 +172,12 @@ export function ActionButton({
       type="button"
       {...props}
       className={cn(
-        "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[12px] leading-4 font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+        "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[11px] leading-4 font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
         variant === "primary" && "bg-white text-black hover:bg-white/90",
         variant === "secondary" && "bg-white/[0.07] text-white hover:bg-white/[0.11]",
         variant === "danger" && "bg-red-500/10 text-red-400 hover:bg-red-500/20",
         className
       )}
     />
-  );
-}
-
-/** One key of a shortcut. */
-export function Kbd({ children }: { children: ReactNode }) {
-  return (
-    <kbd className="flex h-5 min-w-5 items-center justify-center rounded-[5px] bg-white/10 px-1.5 font-[inherit] text-[11px] leading-3 text-white shadow-[inset_0_-1px_0_rgb(255_255_255/0.08)]">
-      {children}
-    </kbd>
   );
 }

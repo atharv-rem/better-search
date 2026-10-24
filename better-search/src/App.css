@@ -4,14 +4,25 @@
 
 @font-face {
   font-family: "Inter Tight";
-  src: url("./assets/inter-tight.ttf") format("truetype");
+  /* Latin subset of the variable font, as woff2 (63 KB against the full
+     TTF's 580 KB). Other scripts in file names fall back to the system font. */
+  src: url("./assets/inter-tight.woff2") format("woff2");
   font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Pixel Square";
+  src: url("./assets/GeistPixel-Square.woff2") format("woff2");
+  font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 
 @theme {
   --font-inter: "Inter Tight", system-ui, sans-serif;
+  --font-pixel: "Geist Pixel Square", "Inter Tight", system-ui, sans-serif;
 }
 
 @layer base {

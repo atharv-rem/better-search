@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowSquareOutIcon, GlobeIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon, GlobeIcon } from "@/lib/phosphor";
 import type { Settings } from "@/lib/settings";
 import { describeUsage, PROVIDERS, useApiKeys, useUsage, type KeyStatus, type Provider } from "@/lib/web-search";
 import { ActionButton, Group, Row, Select } from "@/settings/controls";
+import { Shortcut } from "@/components/ui/kbd";
+import { keepOpenFor } from "@/settings/keep-open";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
@@ -21,7 +23,11 @@ export function ApiKeysSection({ settings, save }: { settings: Settings; save: S
         footer={
           withKey.length === 0
             ? "Add a key below to see web results right here instead of in your browser."
-            : "Enter on a result opens it in your browser. Ctrl+Enter searches in the browser instead."
+            : (
+              <>
+                <Shortcut keys={["Enter"]} /> on a result opens it in your browser. <Shortcut keys={["Ctrl", "Enter"]} /> searches in the browser instead.
+              </>
+            )
         }
       >
         <Row
@@ -97,12 +103,13 @@ function KeyRow({
           {!status?.hint && (
             <button
               type="button"
-              onClick={() =>
+              onClick={() => {
+                keepOpenFor();
                 invoke("open_url", {
                   url: provider.keyUrl,
                   browser: null,
-                }).catch(() => {})
-              }
+                }).catch(() => {});
+              }}
               className="inline-flex items-center gap-0.5 text-zinc-300 hover:text-white"
             >
               Get a key
@@ -130,7 +137,7 @@ function KeyRow({
       ) : status.hint ? (
         <>
           <span
-            className="text-[12px] leading-4 text-zinc-400 tabular-nums"
+            className="text-[11px] leading-4 text-zinc-400 tabular-nums"
             aria-label={`Key ending in ${status.hint}`}
           >
             ••••{status.hint}
@@ -156,7 +163,7 @@ function KeyRow({
             autoComplete="off"
             spellCheck={false}
             disabled={busy}
-            className="h-7 w-44 rounded-md bg-white/[0.07] px-2.5 text-[12px] leading-4 text-white outline-hidden placeholder:text-zinc-500 focus:ring-1 focus:ring-[#6B97FF] disabled:opacity-50"
+            className="h-7 w-44 rounded-md bg-white/[0.07] px-2.5 text-[11px] leading-4 text-white outline-hidden placeholder:text-zinc-500 focus:ring-1 focus:ring-[#6B97FF] disabled:opacity-50"
           />
           <ActionButton type="submit" variant="primary" disabled={busy || !draft.trim()}>
             {busy ? "Checking…" : "Save"}

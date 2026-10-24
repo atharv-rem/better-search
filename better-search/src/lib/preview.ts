@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SearchResult } from "@/lib/backend";
 import { extensionOf, groupOf } from "@/lib/file-groups";
+import { invokeImage, revokeImage } from "@/lib/image-cache";
 
 export interface FolderEntry {
   name: string;
@@ -41,7 +42,7 @@ async function loadUncached(result: SearchResult, thumbSize: number): Promise<Pr
     if (t !== null) return { kind: "text", text: t };
   }
   // Images, videos, PDFs, Office files and anything else Windows can draw.
-  const url = await invoke<string | null>("file_thumbnail", { path: result.path, size: thumbSize });
+  const url = await invokeImage("file_thumbnail", { path: result.path, size: thumbSize });
   if (url) return { kind: "image", url };
   if (DOCX_EXTENSIONS.has(extensionOf(result.name))) {
     const doc = await invoke<Extract<Preview, { kind: "image" | "page" }> | null>("docx_preview", { path: result.path });
@@ -56,7 +57,7 @@ async function loadUncached(result: SearchResult, thumbSize: number): Promise<Pr
 }
 
 // Recent previews, so moving back up the list is instant. Thumbnails are a few
-// hundred KB each, so only a handful are kept.
+// hundred KB each, so only a handful are kept, and a dropped one is freed.
 const CACHE_SIZE = 16;
 const cache = new Map<string, Promise<Preview>>();
 
@@ -73,6 +74,10 @@ export function loadPreview(result: SearchResult, thumbSize: number) {
     preview = loadUncached(result, thumbSize).catch((): Preview => ({ kind: "none" }));
   }
   cache.set(key, preview);
-  if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value!);
+  if (cache.size > CACHE_SIZE) {
+    const [oldest, evicted] = cache.entries().next().value!;
+    cache.delete(oldest);
+    evicted.then((p) => p.kind === "image" && revokeImage(p.url));
+  }
   return preview;
 }

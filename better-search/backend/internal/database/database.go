@@ -74,17 +74,26 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("create database folder: %w", err)
 	}
 
+	// Reads go through a memory map of the file rather than SQLite's own page
+	// cache: mapped pages are Windows' file cache, shared and given back under
+	// memory pressure, and still warm the next time a process opens the
+	// index. So the private page cache can stay small.
 	dsn := path +
 		"?_pragma=busy_timeout(10000)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
-		"&_pragma=cache_size(-65536)" + // 64 MB page cache per connection
+		"&_pragma=mmap_size(" + strconv.Itoa(mmapSize) + ")" +
+		"&_pragma=cache_size(-" + strconv.Itoa(CacheLimit>>10) + ")" +
 		"&_pragma=temp_store(MEMORY)"
 
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
+	// Each connection has a page cache of its own. Two cover every caller:
+	// the watcher reads a volume number while its write transaction is open.
+	conn.SetMaxOpenConns(2)
+	conn.SetMaxIdleConns(1)
 
 	db := &DB{sql: conn, dirCache: make(map[int64]string)}
 	if err := db.migrate(); err != nil {
@@ -204,10 +213,16 @@ type Bulk struct {
 	db    *DB
 	tx    *sql.Tx
 	batch []File
+	args  []any
+	full  *sql.Stmt // inserts a full batch; prepared on first use
 	count int64
 }
 
-const bulkBatchRows = 500 // 8 params per row, well under SQLite's variable limit
+// Rows per INSERT. Small: the driver matches each parameter to its value by
+// scanning the whole argument list, so a statement's cost grows with the
+// square of its parameter count (500 rows took 30% of a full index;
+// 8 measured fastest).
+const bulkBatchRows = 8
 
 func (d *DB) BeginBulk() (*Bulk, error) {
 	tx, err := d.sql.Begin()
@@ -215,12 +230,17 @@ func (d *DB) BeginBulk() (*Bulk, error) {
 		return nil, err
 	}
 	steps := []string{
+		// The indexer process exits once this commits, so the cache goes with it.
+		fmt.Sprintf(`PRAGMA cache_size = -%d`, bulkCacheSize),
 		dropTriggersSQL,
 		// Carry usage stats over to the new index.
 		`DROP TABLE IF EXISTS temp.keep_usage`,
 		`CREATE TEMP TABLE keep_usage AS
 			SELECT id, name, open_count, last_opened FROM files
 			WHERE open_count > 0 OR last_opened IS NOT NULL`,
+		// Built once at the end (Commit) rather than updated row by row.
+		`DROP INDEX IF EXISTS files_parent_name`,
+		`DROP INDEX IF EXISTS files_name_nocase`,
 		`DELETE FROM files`,
 	}
 	for _, s := range steps {
@@ -229,7 +249,19 @@ func (d *DB) BeginBulk() (*Bulk, error) {
 			return nil, fmt.Errorf("start bulk index: %w", err)
 		}
 	}
-	return &Bulk{db: d, tx: tx, batch: make([]File, 0, bulkBatchRows)}, nil
+	return &Bulk{db: d, tx: tx, batch: make([]File, 0, bulkBatchRows), args: make([]any, 0, bulkBatchRows*6)}, nil
+}
+
+func insertSQL(rows int) string {
+	var q strings.Builder
+	q.WriteString(`INSERT OR IGNORE INTO files (id, parent_id, name, is_dir, size, modified_at) VALUES `)
+	for i := range rows {
+		if i > 0 {
+			q.WriteByte(',')
+		}
+		q.WriteString("(?,?,?,?,?,?)")
+	}
+	return q.String()
 }
 
 func (b *Bulk) Add(f File) error {
@@ -244,21 +276,26 @@ func (b *Bulk) flush() error {
 	if len(b.batch) == 0 {
 		return nil
 	}
-	var q strings.Builder
-	q.WriteString(`INSERT OR IGNORE INTO files (id, parent_id, name, is_dir, size, modified_at) VALUES `)
-	args := make([]any, 0, len(b.batch)*6)
-	for i, f := range b.batch {
-		if i > 0 {
-			q.WriteByte(',')
-		}
-		q.WriteString("(?,?,?,?,?,?)")
+	args := b.args[:0]
+	for _, f := range b.batch {
 		var parent any
 		if f.ParentID != 0 {
 			parent = f.ParentID
 		}
 		args = append(args, f.ID, parent, f.Name, f.IsDir, f.Size, f.ModifiedAt)
 	}
-	if _, err := b.tx.Exec(q.String(), args...); err != nil {
+	var err error
+	if len(b.batch) == bulkBatchRows {
+		if b.full == nil {
+			if b.full, err = b.tx.Prepare(insertSQL(bulkBatchRows)); err != nil {
+				return fmt.Errorf("insert files: %w", err)
+			}
+		}
+		_, err = b.full.Exec(args...)
+	} else {
+		_, err = b.tx.Exec(insertSQL(len(b.batch)), args...) // the last, partial batch
+	}
+	if err != nil {
 		return fmt.Errorf("insert files: %w", err)
 	}
 	b.count += int64(len(b.batch))
@@ -266,18 +303,47 @@ func (b *Bulk) flush() error {
 	return nil
 }
 
+// The indexes BeginBulk drops, as schema.sql creates them.
+const (
+	createParentNameIndex = `CREATE UNIQUE INDEX files_parent_name ON files (parent_id, name)`
+	createNameIndex       = `CREATE INDEX files_name_nocase ON files (name COLLATE NOCASE)`
+)
+
+// Without its unique index during the load, a folder can get two rows of
+// the same name (NTFS allows it in case-sensitive folders). Keep the first,
+// as INSERT OR IGNORE did.
+const dropDuplicateNames = `DELETE FROM files WHERE id IN (
+	SELECT id FROM (SELECT id, row_number() OVER (PARTITION BY parent_id, name ORDER BY id) AS n FROM files)
+	WHERE n > 1)`
+
 func (b *Bulk) Commit() error {
 	if err := b.flush(); err != nil {
 		b.tx.Rollback()
 		return err
 	}
+	if _, err := b.tx.Exec(createParentNameIndex); err != nil {
+		// Rare, so only cleaned up when the index finds a duplicate.
+		if _, err := b.tx.Exec(dropDuplicateNames); err != nil {
+			b.tx.Rollback()
+			return fmt.Errorf("finish bulk index: %w", err)
+		}
+		if _, err := b.tx.Exec(createParentNameIndex); err != nil {
+			b.tx.Rollback()
+			return fmt.Errorf("finish bulk index: %w", err)
+		}
+	}
 	steps := []string{
+		createNameIndex,
 		`UPDATE files SET open_count = k.open_count, last_opened = k.last_opened
 			FROM temp.keep_usage AS k
 			WHERE files.id = k.id AND files.name = k.name`,
 		`DROP TABLE temp.keep_usage`,
 		`DELETE FROM meta WHERE key = 'stale'`, // a fresh index has nothing missed
+		`INSERT INTO files_fts (files_fts, rank) VALUES ('automerge', 0)`,
+		`INSERT INTO files_fts (files_fts, rank) VALUES ('hashsize', 67108864)`,
 		`INSERT INTO files_fts (files_fts) VALUES ('rebuild')`,
+		`INSERT INTO files_fts (files_fts, rank) VALUES ('automerge', 4)`,
+		`INSERT INTO files_fts (files_fts, rank) VALUES ('hashsize', 1048576)`,
 		createTriggersSQL,
 	}
 	for _, s := range steps {

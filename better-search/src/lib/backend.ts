@@ -92,8 +92,8 @@ listen<string>("backend-message", ({ payload }) => {
   if (event) eventListeners.forEach((fn) => fn(event));
 });
 
-// The sidecar is stopped whenever the search hides (and settings is closed):
-// nothing in flight will be answered.
+// The sidecar exited (it crashed, or the app is quitting): nothing in flight
+// will be answered.
 listen("backend-stopped", () => {
   for (const p of pending.values()) p.reject(new BackendError("backend stopped"));
   pending.clear();

@@ -5,13 +5,16 @@ import {
   forwardRef,
   isValidElement,
   type ButtonHTMLAttributes,
+  type ComponentType,
   type ReactElement,
   type ReactNode,
 } from "react";
 import { Button as ButtonPrimitive } from "@base-ui/react/button";
 import { cva, type VariantProps } from "class-variance-authority";
-import type { IconComponent } from "@/lib/icon-context";
 import { cn } from "@/lib/utils";
+
+/** An icon component for `leadingIcon` / `trailingIcon`. */
+type IconComponent = ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
 import { omit } from "@/lib/omit";
 import { useShape } from "@/lib/shape-context";
 import { useSizeVariant } from "@/lib/size-context";

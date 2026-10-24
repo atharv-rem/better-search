@@ -26,6 +26,7 @@ import (
 
 	"better-search/backend/internal/database"
 	"better-search/backend/internal/indexer"
+	"better-search/backend/internal/memory"
 
 	"golang.org/x/sys/windows"
 )
@@ -267,19 +268,7 @@ func (w *watcher) flush() {
 		retry()
 		return
 	}
-	trimMemory()
-}
-
-var procEmptyWorkingSet = windows.NewLazySystemDLL("kernel32.dll").NewProc("K32EmptyWorkingSet")
-
-// trimMemory hands the heap back to Windows and drops the pages it won't need
-// until the next batch, so the watcher sits at a few MB while idle.
-func trimMemory() {
-	debug.FreeOSMemory()
-	h, err := windows.GetCurrentProcess()
-	if err == nil {
-		procEmptyWorkingSet.Call(uintptr(h))
-	}
+	memory.Trim()
 }
 
 // apply brings the index in line with the disk for every dirty path.

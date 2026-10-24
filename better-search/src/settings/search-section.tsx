@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SEARCH_ENGINES, type Settings } from "@/lib/settings";
 import { BrowserIcon, useInstalledBrowsers } from "@/components/browser-icon";
+import { Shortcut } from "@/components/ui/kbd";
 import { ActionButton, Group, Row, Segmented, Select, Switch } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
@@ -30,7 +31,11 @@ export function SearchSection({ settings, save }: { settings: Settings; save: Sa
             onChange={(max_results) => set({ max_results })}
           />
         </Row>
-        <Row label="Enter" description="What Enter does to a result. Ctrl+Enter does the other.">
+        <Row label="Enter" description={
+            <>
+              What <Shortcut keys={["Enter"]} /> does to a result. <Shortcut keys={["Ctrl", "Enter"]} /> does the other.
+            </>
+          }>
           <Segmented
             label="Enter"
             value={search.enter_reveals ? "reveal" : "open"}
@@ -147,7 +152,7 @@ export function WebSection({ settings, save }: { settings: Settings; save: Save 
             placeholder="https://example.com/search?q=%s"
             aria-label="Search URL"
             spellCheck={false}
-            className="h-7 w-72 rounded-md bg-white/[0.07] px-2.5 text-[12px] leading-4 text-white outline-hidden placeholder:text-zinc-500 focus:ring-1 focus:ring-[#6B97FF]"
+            className="h-7 w-72 rounded-md bg-white/[0.07] px-2.5 text-[11px] leading-4 text-white outline-hidden placeholder:text-zinc-500 focus:ring-1 focus:ring-[#6B97FF]"
           />
         </Row>
       )}

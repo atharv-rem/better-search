@@ -26,6 +26,42 @@ func TestParseRuns(t *testing.T) {
 	}
 }
 
+// set puts an entry in place, for tests that build a scan by hand.
+func (s *mftScan) set(rec, parent uint32, flags uint8, name string) {
+	off := len(s.names)
+	s.names = append(s.names, name...)
+	s.entries[rec] = entry{parent: parent, flags: flags, name: uint32(off), nameLen: uint16(len(name))}
+}
+
+func (s *mftScan) addLink(rec, parent uint32, name string) {
+	off := len(s.names)
+	s.names = append(s.names, name...)
+	s.links[rec] = append(s.links[rec], link{parent, uint32(off), uint16(len(name))})
+}
+
+// appendName must decode exactly as utf16.Decode did, broken pairs included.
+func TestAppendName(t *testing.T) {
+	for _, units := range [][]uint16{
+		utf16.Encode([]rune("Resume.pdf")),
+		utf16.Encode([]rune("résumé 履歴書 😀.txt")),
+		{0xD83D},               // lone high surrogate
+		{0xDE00, 0x41},         // lone low surrogate
+		{0xD83D, 0x41, 0xDE00}, // high, then not a low one
+		{0x41, 0xD83D},         // high surrogate at the end
+		{},
+	} {
+		b := make([]byte, len(units)*2)
+		for i, u := range units {
+			binary.LittleEndian.PutUint16(b[i*2:], u)
+		}
+		s := &mftScan{}
+		off, n := s.appendName(b)
+		if got, want := s.name(off, n), string(utf16.Decode(units)); got != want {
+			t.Errorf("%x: got %q, want %q", units, got, want)
+		}
+	}
+}
+
 type fakeAttr struct {
 	typ  uint32
 	body []byte // full attribute bytes from offset 16 onward
@@ -114,14 +150,14 @@ func TestParseRecord(t *testing.T) {
 	), 40)
 
 	e := s.entries[40]
-	if e.name != "Resume.pdf" || e.parent != 5 || e.size != 123456 || e.mtime != 1_700_000_000 || e.flags != entryInUse {
+	if s.name(e.name, e.nameLen) != "Resume.pdf" || e.parent != 5 || e.size != 123456 || e.mtime != 1_700_000_000 || e.flags != entryInUse {
 		t.Fatalf("got %+v", e)
 	}
 
 	// Extension record pointing back at record 41 carries its second hard link.
 	s.parseRecord(record(recordInUse|recordDirectory, 0, fileName(5, "Docs", 1)), 41)
 	s.parseRecord(record(recordInUse, 41, fileName(30, "Docs-link", 1)), 42)
-	if s.entries[41].flags != entryInUse|entryDir || len(s.links[41]) != 1 || s.links[41][0].name != "Docs-link" {
+	if s.entries[41].flags != entryInUse|entryDir || len(s.links[41]) != 1 || s.name(s.links[41][0].name, s.links[41][0].nameLen) != "Docs-link" {
 		t.Fatalf("extension merge: %+v %+v", s.entries[41], s.links[41])
 	}
 
@@ -129,7 +165,7 @@ func TestParseRecord(t *testing.T) {
 	bad := record(recordInUse, 0, fileName(5, "torn.txt", 1))
 	bad[1022] ^= 0xFF
 	s.parseRecord(bad, 43)
-	if s.entries[43].name != "" {
+	if s.entries[43].nameLen != 0 {
 		t.Fatal("torn record was accepted")
 	}
 }
@@ -143,17 +179,17 @@ func TestSaveSkipsExcludedAndOrphans(t *testing.T) {
 
 	dir := entryInUse | entryDir
 	s := &mftScan{entries: make([]entry, 30), links: map[uint32][]link{}}
-	s.entries[5] = entry{parent: 5, flags: dir, name: "."}
-	s.entries[11] = entry{parent: 5, flags: dir, name: "$Extend"} // metadata, skipped
-	s.entries[16] = entry{parent: 11, flags: entryInUse, name: "$UsnJrnl"}
-	s.entries[17] = entry{parent: 5, flags: dir, name: "Windows"}
-	s.entries[18] = entry{parent: 17, flags: dir, name: "WinSxS"}
-	s.entries[19] = entry{parent: 18, flags: entryInUse, name: "notepad.exe"}
-	s.links[19] = []link{{parent: 20, name: "notepad.exe"}} // hard link also in System32
-	s.entries[20] = entry{parent: 17, flags: dir, name: "System32"}
-	s.entries[21] = entry{parent: 25, flags: entryInUse, name: "orphan.txt"} // parent not in use
-	s.entries[22] = entry{parent: 23, flags: dir, name: "loopA"}
-	s.entries[23] = entry{parent: 22, flags: dir, name: "loopB"}
+	s.set(5, 5, dir, ".")
+	s.set(11, 5, dir, "$Extend") // metadata, skipped
+	s.set(16, 11, entryInUse, "$UsnJrnl")
+	s.set(17, 5, dir, "Windows")
+	s.set(18, 17, dir, "WinSxS")
+	s.set(19, 18, entryInUse, "notepad.exe")
+	s.addLink(19, 20, "notepad.exe") // hard link also in System32
+	s.set(20, 17, dir, "System32")
+	s.set(21, 25, entryInUse, "orphan.txt") // parent not in use
+	s.set(22, 23, dir, "loopA")
+	s.set(23, 22, dir, "loopB")
 
 	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	b, err := db.BeginBulk()
@@ -190,37 +226,37 @@ func TestSaveSkipsExcludedPaths(t *testing.T) {
 	dir := entryInUse | entryDir
 	file := entryInUse
 	s := &mftScan{entries: make([]entry, 60), links: map[uint32][]link{}}
-	s.entries[5] = entry{parent: 5, flags: dir, name: "."}
-	s.entries[16] = entry{parent: 5, flags: dir, name: "Users"}
-	s.entries[17] = entry{parent: 16, flags: dir, name: "bob"}
-	s.entries[18] = entry{parent: 17, flags: dir, name: "AppData"}
-	s.entries[19] = entry{parent: 18, flags: dir, name: "Local"}
-	s.entries[20] = entry{parent: 19, flags: dir, name: "packages"} // Users\*\AppData\Local\Packages
-	s.entries[21] = entry{parent: 20, flags: file, name: "inside-packages.txt"}
-	s.entries[22] = entry{parent: 19, flags: dir, name: "Keep"}
-	s.entries[23] = entry{parent: 22, flags: file, name: "kept-local.txt"}
-	s.entries[24] = entry{parent: 18, flags: dir, name: "Roaming"}
-	s.entries[25] = entry{parent: 24, flags: dir, name: "zen"}
-	s.entries[26] = entry{parent: 25, flags: dir, name: "Profiles"}
-	s.entries[27] = entry{parent: 26, flags: dir, name: "abc.default"}
-	s.entries[28] = entry{parent: 27, flags: dir, name: "storage"} // ...\Profiles\*\storage
-	s.entries[29] = entry{parent: 28, flags: file, name: "blob.final"}
-	s.entries[30] = entry{parent: 27, flags: file, name: "prefs.js"}
-	s.entries[31] = entry{parent: 5, flags: dir, name: "Packages"} // not under AppData\Local: kept
-	s.entries[32] = entry{parent: 31, flags: file, name: "kept-root.txt"}
-	s.entries[33] = entry{parent: 17, flags: dir, name: "rusty"}
-	s.entries[34] = entry{parent: 33, flags: file, name: "Cargo.toml"}
-	s.entries[35] = entry{parent: 33, flags: dir, name: "target"} // next to Cargo.toml
-	s.entries[36] = entry{parent: 35, flags: file, name: "build-output.rlib"}
-	s.entries[37] = entry{parent: 17, flags: dir, name: "target"} // no Cargo.toml: kept
-	s.entries[38] = entry{parent: 37, flags: file, name: "kept-target.txt"}
-	s.entries[39] = entry{parent: 22, flags: dir, name: "Code Cache"}
-	s.entries[40] = entry{parent: 39, flags: file, name: "inside-cache.bin"}
-	s.entries[41] = entry{parent: 24, flags: dir, name: "Code"}
-	s.entries[42] = entry{parent: 41, flags: dir, name: "User"}
-	s.entries[43] = entry{parent: 42, flags: dir, name: "History"} // Roaming\*\User\History
-	s.entries[44] = entry{parent: 43, flags: file, name: "snapshot.ts"}
-	s.entries[45] = entry{parent: 42, flags: file, name: "settings.json"}
+	s.set(5, 5, dir, ".")
+	s.set(16, 5, dir, "Users")
+	s.set(17, 16, dir, "bob")
+	s.set(18, 17, dir, "AppData")
+	s.set(19, 18, dir, "Local")
+	s.set(20, 19, dir, "packages") // Users\*\AppData\Local\Packages
+	s.set(21, 20, file, "inside-packages.txt")
+	s.set(22, 19, dir, "Keep")
+	s.set(23, 22, file, "kept-local.txt")
+	s.set(24, 18, dir, "Roaming")
+	s.set(25, 24, dir, "zen")
+	s.set(26, 25, dir, "Profiles")
+	s.set(27, 26, dir, "abc.default")
+	s.set(28, 27, dir, "storage") // ...\Profiles\*\storage
+	s.set(29, 28, file, "blob.final")
+	s.set(30, 27, file, "prefs.js")
+	s.set(31, 5, dir, "Packages") // not under AppData\Local: kept
+	s.set(32, 31, file, "kept-root.txt")
+	s.set(33, 17, dir, "rusty")
+	s.set(34, 33, file, "Cargo.toml")
+	s.set(35, 33, dir, "target") // next to Cargo.toml
+	s.set(36, 35, file, "build-output.rlib")
+	s.set(37, 17, dir, "target") // no Cargo.toml: kept
+	s.set(38, 37, file, "kept-target.txt")
+	s.set(39, 22, dir, "Code Cache")
+	s.set(40, 39, file, "inside-cache.bin")
+	s.set(41, 24, dir, "Code")
+	s.set(42, 41, dir, "User")
+	s.set(43, 42, dir, "History") // Roaming\*\User\History
+	s.set(44, 43, file, "snapshot.ts")
+	s.set(45, 42, file, "settings.json")
 
 	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	b, err := db.BeginBulk()

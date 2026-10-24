@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -17,25 +18,24 @@ import (
 	"better-search/backend/internal/database"
 	"better-search/backend/internal/indexer"
 	"better-search/backend/internal/ipc"
+	"better-search/backend/internal/memory"
 	"better-search/backend/internal/search"
-	"better-search/backend/internal/watcher"
 
 	"golang.org/x/sys/windows"
 )
 
+// The search helper (better-search-helper.exe): answers the app's searches
+// over stdin/stdout and starts full indexes. The file watcher and the indexer
+// are separate programs built from cmd/watcher and cmd/indexer, so each
+// shows under its own name in Task Manager.
 func main() {
 	dbPath := flag.String("db", database.DefaultPath(), "path to the SQLite index")
 	settingsPath := flag.String("settings", "", "the app's settings.json, for the user's indexing exclusions")
-	indexOnly := flag.Bool("index-only", false, "build the index and exit (run elevated)")
-	watch := flag.Bool("watch", false, "keep the index up to date from filesystem changes until stopped")
 	flag.Parse()
 
-	if *watch {
-		os.Exit(watcher.Run(*dbPath, *settingsPath))
-	}
-	if *indexOnly {
-		os.Exit(indexer.RunChild(*dbPath, *settingsPath))
-	}
+	// Runs for as long as the app, idle most of the time: collect garbage
+	// sooner, so the heap stays small between searches.
+	debug.SetGCPercent(50)
 
 	log.Println("🚀 Better Search backend started successfully!")
 
@@ -139,6 +139,10 @@ func main() {
 				CacheBytes: cacheUsed,
 				CacheLimit: database.CacheLimit,
 			})
+
+		case ipc.TypeTrim:
+			db.Trim()
+			memory.Trim()
 
 		case ipc.TypeReindex:
 			if !indexing.CompareAndSwap(false, true) {

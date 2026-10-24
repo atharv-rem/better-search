@@ -35,6 +35,8 @@ export interface Settings {
     /** Full paths, or folder names skipped wherever they are. */
     excluded_folders: string[];
   };
+  /** The first-run screen has been finished or skipped. */
+  onboarded: boolean;
 }
 
 /** Until the saved ones arrive. Matches `Settings::default` in settings.rs. */
@@ -43,6 +45,8 @@ export const DEFAULT_SETTINGS: Settings = {
   search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true },
   web: { engine: "google", custom_url: "", browser: "default", provider: "browser" },
   indexing: { excluded_drives: [], excluded_folders: [] },
+  // Only a fallback for a failed read; the first-run screen is the shell's call.
+  onboarded: true,
 };
 
 export const SEARCH_ENGINES = [

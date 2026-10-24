@@ -1,20 +1,15 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { SearchResult } from "@/lib/backend";
 import { groupOf } from "@/lib/file-groups";
 import { iconOf } from "@/lib/file-icons";
+import { imageCache } from "@/lib/image-cache";
 
-// Icon data URLs by path (null: Windows has none). Promises are cached so
-// rows asking for the same app share one lookup.
-const cache = new Map<string, Promise<string | null>>();
+// Icons by path (null: Windows has none), so rows asking for the same app
+// share one lookup. Plenty for a few searches' apps and the browser menu.
+const icons = imageCache("file_icon", 200);
 
 export function loadIcon(path: string) {
-  let icon = cache.get(path);
-  if (!icon) {
-    icon = invoke<string | null>("file_icon", { path }).catch(() => null);
-    cache.set(path, icon);
-  }
-  return icon;
+  return icons(path, { path });
 }
 
 /** An app's own icon from Windows, falling back to the generic file-type glyph. */

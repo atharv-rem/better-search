@@ -9,18 +9,20 @@ import {
   FileTextIcon,
   GearSixIcon,
   GlobeIcon,
+  HouseIcon,
   HardDrivesIcon,
   InfoIcon,
   KeyIcon,
   MagnifyingGlassIcon,
-  XIcon,
   type IconProps,
-} from "@phosphor-icons/react";
+} from "@/lib/phosphor";
 import { saveSettings, useSettings, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { ActionButton, Group, Row } from "@/settings/controls";
 import { ApiKeysSection } from "@/settings/api-keys-section";
 import { GeneralSection } from "@/settings/general-section";
+import { HomeSection } from "@/settings/home-section";
+import { isHeldOpen, keepOpenFor } from "@/settings/keep-open";
 import { IndexingSection } from "@/settings/indexing-section";
 import { SearchSection, WebSection } from "@/settings/search-section";
 
@@ -28,6 +30,7 @@ type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 type SectionProps = { settings: Settings; save: Save };
 
 const SECTIONS: { id: string; name: string; icon: ComponentType<IconProps>; Content: ComponentType<SectionProps> }[] = [
+  { id: "home", name: "Home", icon: HouseIcon, Content: () => null },
   { id: "general", name: "General", icon: GearSixIcon, Content: GeneralSection },
   { id: "indexing", name: "Indexing", icon: HardDrivesIcon, Content: IndexingSection },
   { id: "search", name: "Search", icon: MagnifyingGlassIcon, Content: SearchSection },
@@ -90,12 +93,30 @@ export function SettingsWindow() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // A click outside the window closes it. Only once it has had focus, so it
+  // can't close before it ever opened.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let had = false;
+    win
+      .isFocused()
+      .then((focused) => (had ||= focused))
+      .catch(() => {});
+    const unlisten = win.onFocusChanged(({ payload: focused }) => {
+      if (focused) had = true;
+      else if (had && !isHeldOpen()) closeWindow();
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(() => {});
+    };
+  }, []);
+
   return (
-    <div className="dark flex h-screen w-screen overflow-hidden rounded-[14px] bg-black text-white shadow-[inset_0_0_0_1px_rgb(255_255_255/0.1)] select-none">
+    <div className="dark flex h-screen w-screen overflow-hidden rounded-[14px] bg-black text-white select-none">
       <nav
         data-tauri-drag-region
         aria-label="Settings sections"
-        className="flex w-[186px] shrink-0 flex-col gap-0.5 rounded-l-[14px] bg-[#141414] px-2 pt-3 pb-2 shadow-[inset_1px_1px_0_rgb(255_255_255/0.1),inset_0_-1px_0_rgb(255_255_255/0.1)]"
+        className="flex w-32 shrink-0 flex-col gap-0.5 rounded-l-[14px] bg-[#070707] p-2"
       >
         {SECTIONS.map(({ id, name, icon: Icon }) => {
           const active = id === section.id;
@@ -106,40 +127,39 @@ export function SettingsWindow() {
               onClick={() => choose(id)}
               aria-current={active ? "page" : undefined}
               className={cn(
-                "flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] leading-4 transition-colors",
+                "flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12px] leading-4 transition-colors",
                 active ? "bg-white/[0.08] text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
               )}
             >
-              <Icon size={16} weight={active ? "fill" : "regular"} className="shrink-0" />
+              {/* A fixed box, so glyphs of different widths (the filled house) sit on one line. */}
+              <span className="flex size-4 shrink-0 items-center justify-center">
+                <Icon size={14} weight={active ? "fill" : "regular"} />
+              </span>
               <span className="truncate">{name}</span>
             </button>
           );
         })}
       </nav>
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header data-tauri-drag-region className="flex h-14 shrink-0 items-center justify-between pr-3 pl-8">
-          <h1 data-tauri-drag-region className="text-[15px] leading-5 font-semibold">
-            {section.name}
-          </h1>
-          <button
-            type="button"
-            onClick={closeWindow}
-            aria-label="Close settings"
-            className="flex size-7 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-white/10 hover:text-white"
-          >
-            <XIcon size={16} />
-          </button>
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        {section.id === "home" ? (
+          <div key="home" className="absolute inset-0 motion-safe:animate-fade-in">
+            <HomeSection />
+          </div>
+        ) : null}
+        <header data-tauri-drag-region className="relative z-10 h-10 shrink-0">
         </header>
-        <div className="flex-1 overflow-y-auto px-8 pb-8 select-text">
-          {settings ? (
-            <div key={section.id} className="flex max-w-[600px] flex-col gap-6 motion-safe:animate-fade-in">
-              <section.Content settings={settings} save={save} />
-            </div>
-          ) : (
-            <div className="h-40 animate-pulse rounded-xl bg-white/[0.04]" role="status" aria-label="Loading settings" />
-          )}
-        </div>
+        {section.id !== "home" && (
+          <div className="flex-1 overflow-y-auto px-5 pb-5 select-text">
+            {settings ? (
+              <div key={section.id} className="flex max-w-[560px] flex-col gap-4 motion-safe:animate-fade-in">
+                <section.Content settings={settings} save={save} />
+              </div>
+            ) : (
+              <div className="h-40 animate-pulse rounded-xl bg-white/[0.04]" role="status" aria-label="Loading settings" />
+            )}
+          </div>
+        )}
       </main>
     </div>
   );
@@ -239,11 +259,12 @@ function AboutSection() {
       </Row>
       <Row label="Logs" description="What the app and the indexer wrote while running, for tracking down problems." error={error}>
         <ActionButton
-          onClick={() =>
+          onClick={() => {
+            keepOpenFor();
             invoke("open_logs_folder")
               .then(() => setError(null))
-              .catch((err) => setError(String(err)))
-          }
+              .catch((err) => setError(String(err)));
+          }}
         >
           <FileTextIcon size={14} />
           Open logs folder

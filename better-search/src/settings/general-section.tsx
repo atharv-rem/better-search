@@ -1,9 +1,10 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as autostartEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowCounterClockwiseIcon, PowerIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, PowerIcon } from "@/lib/phosphor";
 import { DEFAULT_SETTINGS, type Settings } from "@/lib/settings";
-import { ActionButton, Group, Kbd, Row, Switch } from "@/settings/controls";
+import { Kbd, Shortcut } from "@/components/ui/kbd";
+import { ActionButton, Group, Row, Switch } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
@@ -109,12 +110,25 @@ function ShortcutRow({ shortcut, save }: { shortcut: string; save: Save }) {
   return (
     <Row
       label="Shortcut"
-      description={recording ? "Press the new keys. Esc cancels." : "Opens and closes the search from anywhere."}
+      description={
+        recording ? (
+          <>
+            Press the new keys. <Shortcut keys={["Esc"]} /> cancels.
+          </>
+        ) : (
+          "Opens and closes the search from anywhere."
+        )
+      }
       error={error}
     >
       {shortcut !== DEFAULT_SETTINGS.shortcut && !recording && (
-        <ActionButton aria-label="Reset to Alt+S" title="Reset to Alt+S" onClick={() => apply(DEFAULT_SETTINGS.shortcut)}>
+        <ActionButton
+          aria-label={`Reset to ${keysOf(DEFAULT_SETTINGS.shortcut).join("+")}`}
+          onClick={() => apply(DEFAULT_SETTINGS.shortcut)}
+        >
           <ArrowCounterClockwiseIcon size={14} />
+          Reset to
+          <Shortcut keys={keysOf(DEFAULT_SETTINGS.shortcut)} className="mx-0" />
         </ActionButton>
       )}
       <button
@@ -127,7 +141,7 @@ function ShortcutRow({ shortcut, save }: { shortcut: string; save: Save }) {
         onBlur={() => setRecording(false)}
         aria-label={recording ? "Recording shortcut" : `Change shortcut, currently ${keysOf(shortcut).join(" ")}`}
         className={
-          "flex h-7 min-w-24 items-center justify-center gap-1 rounded-md px-2 text-[12px] leading-4 transition-colors " +
+          "flex h-7 min-w-24 items-center justify-center gap-1 rounded-md px-2 text-[11px] leading-4 transition-colors " +
           (recording ? "bg-[#6B97FF]/15 text-[#9DB9FF] ring-1 ring-[#6B97FF]/60" : "bg-white/[0.07] hover:bg-white/[0.11]")
         }
       >

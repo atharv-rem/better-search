@@ -18,6 +18,15 @@ pub struct Settings {
     pub search: SearchSettings,
     pub web: WebSettings,
     pub indexing: IndexingSettings,
+    /// The first-run screen (admin rights, then the first index) has been
+    /// finished or skipped. A settings file from before it existed counts as
+    /// done, so only a fresh install sees it.
+    #[serde(default = "done")]
+    pub onboarded: bool,
+}
+
+fn done() -> bool {
+    true
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -70,6 +79,7 @@ impl Default for Settings {
             search: SearchSettings::default(),
             web: WebSettings::default(),
             indexing: IndexingSettings::default(),
+            onboarded: false,
         }
     }
 }

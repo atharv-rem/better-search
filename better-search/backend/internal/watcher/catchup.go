@@ -10,6 +10,7 @@ import (
 
 	"better-search/backend/internal/database"
 	"better-search/backend/internal/indexer"
+	"better-search/backend/internal/memory"
 
 	"golang.org/x/sys/windows"
 )
@@ -61,7 +62,7 @@ func (w *watcher) catchUp(drive string) {
 	default:
 		log.Printf("Catch-up %s: checked %d folders, %d had changes, in %v", drive, c.folders, c.changed, time.Since(start).Round(time.Millisecond))
 	}
-	trimMemory()
+	memory.Trim()
 }
 
 type catcher struct {

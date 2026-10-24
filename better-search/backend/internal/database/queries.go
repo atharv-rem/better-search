@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const fileColumns = `f.id, f.parent_id, f.name, f.is_dir, f.size, f.modified_at, f.open_count, f.last_opened`
@@ -48,7 +49,7 @@ func (d *DB) SearchNames(query string, terms []string, limit int) ([]File, error
 
 	var long, short []string
 	for _, t := range terms {
-		if len([]rune(t)) >= 3 {
+		if utf8.RuneCountInString(t) >= 3 {
 			long = append(long, t)
 		} else {
 			short = append(short, t)
@@ -77,7 +78,7 @@ func (d *DB) SearchNames(query string, terms []string, limit int) ([]File, error
 	}
 	q.WriteString(rankOrder + " LIMIT ?")
 	esc := escapeLike(query)
-	exact := []any{query, esc + ".%", len([]rune(query))}
+	exact := []any{query, esc + ".%", utf8.RuneCountInString(query)}
 	args = append(args, exact...)
 	args = append(args, esc+"%")
 	args = append(args, exact...)
@@ -116,8 +117,10 @@ func prefixEnd(p string) string {
 	return string(r)
 }
 
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 func escapeLike(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+	return likeEscaper.Replace(s)
 }
 
 // MarkOpened bumps the usage stats used for ranking.
@@ -139,7 +142,9 @@ func (d *DB) Path(f File) (string, error) {
 	return joinPath(dir, f.Name), nil
 }
 
-const maxDirCache = 200_000
+// A search needs at most one folder per result, so this covers many searches
+// without holding a large part of the tree.
+const maxDirCache = 20_000
 
 func (d *DB) dirPath(id int64, depth int) (string, error) {
 	if depth > 1024 {

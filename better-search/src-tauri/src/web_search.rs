@@ -90,8 +90,8 @@ fn api_client() -> &'static reqwest::Client {
 
 /// Favicons by site ("https://example.com"), kept across searches and windows.
 /// None: the site has none worth showing.
-fn favicons() -> &'static Mutex<HashMap<String, Option<String>>> {
-    static FAVICONS: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+fn favicons() -> &'static Mutex<HashMap<String, Option<Vec<u8>>>> {
+    static FAVICONS: OnceLock<Mutex<HashMap<String, Option<Vec<u8>>>>> = OnceLock::new();
     FAVICONS.get_or_init(Default::default)
 }
 
@@ -174,20 +174,19 @@ fn icon_link(html: &str) -> Option<String> {
     best.map(|(_, href)| href)
 }
 
-/// The image at `url` as a data URL, if it is one.
-async fn image_data_url(url: &str) -> Option<String> {
-    use base64::Engine;
+/// The image at `url`, if it is one.
+async fn image_bytes(url: &str) -> Option<Vec<u8>> {
     let (_, body) = fetch_head(url).await?;
     // A cut-off image wouldn't draw.
     if body.len() >= FAVICON_MAX_BYTES {
         return None;
     }
-    let kind = image_type(&body)?;
-    Some(format!("data:{kind};base64,{}", base64::engine::general_purpose::STANDARD.encode(&body)))
+    image_type(&body)?;
+    Some(body)
 }
 
-async fn find_favicon(site: &reqwest::Url) -> Option<String> {
-    if let Some(icon) = image_data_url(site.join("/favicon.ico").ok()?.as_str()).await {
+async fn find_favicon(site: &reqwest::Url) -> Option<Vec<u8>> {
+    if let Some(icon) = image_bytes(site.join("/favicon.ico").ok()?.as_str()).await {
         return Some(icon);
     }
     let (kind, page) = fetch_head(site.as_str()).await?;
@@ -199,14 +198,20 @@ async fn find_favicon(site: &reqwest::Url) -> Option<String> {
     if !matches!(icon.scheme(), "https" | "http") {
         return None;
     }
-    image_data_url(icon.as_str()).await
+    image_bytes(icon.as_str()).await
 }
 
-/// The site's own favicon for a result's page, as a data URL. Asked of the
-/// site itself, not a favicon service, so no third party sees the results.
+/// The site's own favicon for a result's page, as the image file's bytes (no
+/// bytes: none). Asked of the site itself, not a favicon service, so no third
+/// party sees the results. Raw bytes rather than a data URL: a third smaller
+/// than base64, and the page keeps them as a blob rather than a string.
 #[tauri::command]
-pub async fn favicon(url: String) -> Option<String> {
-    let page = reqwest::Url::parse(&url).ok()?;
+pub async fn favicon(url: String) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(site_favicon(&url).await.unwrap_or_default())
+}
+
+async fn site_favicon(url: &str) -> Option<Vec<u8>> {
+    let page = reqwest::Url::parse(url).ok()?;
     if !matches!(page.scheme(), "https" | "http") {
         return None;
     }
@@ -217,7 +222,7 @@ pub async fn favicon(url: String) -> Option<String> {
     }
     let icon = find_favicon(&site).await;
     let mut cache = favicons().lock().unwrap();
-    if cache.len() >= 500 {
+    if cache.len() >= 200 {
         cache.clear();
     }
     cache.insert(key, icon.clone());

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowsClockwiseIcon, DatabaseIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, HardDrivesIcon, PlusIcon, StackIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowsClockwiseIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, PlusIcon, XIcon } from "@/lib/phosphor";
 import { backend, BackendError, type IndexProgress, type IndexStatus } from "@/lib/backend";
 import type { Settings } from "@/lib/settings";
 import { ActionButton, Group, Row, Switch } from "@/settings/controls";
+import { keepOpenWhile } from "@/settings/keep-open";
+import { ServerRack, type RackUnit } from "@/settings/server-rack";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
@@ -97,7 +99,7 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
   const startRebuild = async () => {
     setRebuild({ kind: "asking" });
     try {
-      await backend.reindex();
+      await keepOpenWhile(backend.reindex());
       setRebuild((r) => (r.kind === "asking" ? { kind: "indexing" } : r));
     } catch (err) {
       if (err instanceof BackendError && err.code === "admin_denied") {
@@ -116,56 +118,78 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
   const busy = rebuild.kind === "asking" || rebuild.kind === "indexing";
   const included = (drives ?? []).filter((d) => d.ntfs && !indexing.excluded_drives.includes(d.letter));
 
+  const reading = rebuild.kind === "indexing" ? rebuild.progress : undefined;
+  const pct = reading && reading.total > 0 ? Math.min(100, Math.round((reading.done / reading.total) * 100)) : null;
+
+  const controller: RackUnit = {
+    lit: true,
+    lamp: busy ? "busy" : status && status.indexed_at > 0 ? "on" : "off",
+    title:
+      status === null ? "Reading the index…" : status.indexed_at === 0 ? "Not indexed yet" : `${status.file_count.toLocaleString()} items`,
+    detail: reading
+      ? `${reading.phase === "reading" ? "Reading" : "Saving"} ${reading.drive}`
+      : rebuild.kind === "asking"
+        ? "Waiting for permission…"
+        : changed
+          ? "Rebuild to apply your changes"
+          : status && status.indexed_at > 0
+            ? `Last indexed ${timeAgo(status.indexed_at)}`
+            : undefined,
+    warn: changed && !busy,
+    fraction: pct === null ? undefined : pct / 100,
+  };
+
+  const driveUnits: RackUnit[] = (drives ?? []).map((d) => {
+    const on = d.ntfs && !indexing.excluded_drives.includes(d.letter);
+    const reads = reading?.drive.toUpperCase().startsWith(d.letter.toUpperCase());
+    return {
+      lamp: !on ? "off" : reads ? "busy" : "on",
+      title: `${d.letter} ${d.label || "Local Disk"}`,
+      // Only what the drive's state changes: space while it's indexed, why not otherwise.
+      detail: !d.ntfs ? "Not NTFS" : !on ? "Excluded" : `${gigabytes(d.free_bytes)} free of ${gigabytes(d.total_bytes)}`,
+      fraction: d.total_bytes > 0 ? 1 - d.free_bytes / d.total_bytes : 0,
+    };
+  });
+  const top = [controller, ...driveUnits];
+
+  const bottom: RackUnit[] = [
+    {
+      lamp: "none",
+      title: "Index database",
+      detail: storage ? fileSize(storage.index_bytes) : "…",
+    },
+    {
+      lamp: "none",
+      title: "Database cache",
+      detail: status ? `${fileSize(status.cache_bytes)} of ${fileSize(status.cache_limit)}` : "…",
+      fraction: status && status.cache_limit > 0 ? Math.min(1, status.cache_bytes / status.cache_limit) : 0,
+    },
+  ];
+
   return (
     <>
+      <ServerRack top={top} bottom={bottom} indexing={rebuild.kind === "indexing"} />
+
       <Group footer="Rebuilding asks Windows for administrator permission, to read each drive's file list directly.">
         <Row
-          icon={<DatabaseIcon size={18} />}
-          label={
-            status === null
-              ? "Reading the index…"
-              : status.indexed_at === 0
-                ? "Not indexed yet"
-                : `${status.file_count.toLocaleString()} files and folders`
-          }
+          icon={<ArrowsClockwiseIcon size={18} className={busy ? "motion-safe:animate-spin" : undefined} />}
+          label="Rebuild index"
           description={
-            rebuild.kind === "indexing" ? (
-              <IndexingProgress progress={rebuild.progress} />
-            ) : rebuild.kind === "asking" ? (
+            rebuild.kind === "asking" ? (
               "Waiting for permission…"
-            ) : changed ? (
+            ) : changed && !busy ? (
               <span className="text-amber-300/90">Rebuild the index to apply your changes.</span>
-            ) : status && status.indexed_at > 0 ? (
-              `Last indexed ${timeAgo(status.indexed_at)}`
             ) : undefined
           }
           error={rebuild.kind === "error" ? `Indexing failed: ${rebuild.message}` : rebuild.kind === "idle" ? rebuild.message : null}
         >
           <ActionButton variant={changed ? "primary" : "secondary"} disabled={busy} onClick={startRebuild}>
-            <ArrowsClockwiseIcon size={14} className={busy ? "motion-safe:animate-spin" : undefined} />
             {busy ? "Indexing…" : "Rebuild index"}
           </ActionButton>
         </Row>
       </Group>
 
-      <Group title="Storage">
-        <Row icon={<HardDrivesIcon size={18} />} label="Index database" description="The local SQLite file your files are searched in">
-          <StorageSize bytes={storage?.index_bytes} />
-        </Row>
-        <Row
-          icon={<StackIcon size={18} />}
-          label="Database cache"
-          description={
-            status
-              ? `Recently read parts of the index, kept in memory for faster searches. Up to ${fileSize(status.cache_limit)} per connection.`
-              : "Recently read parts of the index, kept in memory for faster searches"
-          }
-        >
-          <StorageSize bytes={status?.cache_bytes} />
-        </Row>
-      </Group>
-
-      <Group title="Drives" footer="Only NTFS drives can be indexed.">
+      <Group title="Drives to index" footer="Only NTFS drives can be indexed.">
         {drives === null ? (
           <Row label="Finding drives…" />
         ) : drives.length === 0 ? (
@@ -174,16 +198,7 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
           drives.map((d) => {
             const on = d.ntfs && !indexing.excluded_drives.includes(d.letter);
             return (
-              <Row
-                key={d.letter}
-                icon={<HardDriveIcon size={18} />}
-                label={`${d.label || "Local Disk"} (${d.letter})`}
-                description={
-                  d.ntfs
-                    ? `${gigabytes(d.free_bytes)} free of ${gigabytes(d.total_bytes)}`
-                    : "Not NTFS, so it can't be indexed"
-                }
-              >
+              <Row key={d.letter} icon={<HardDriveIcon size={18} />} label={`${d.label || "Local Disk"} (${d.letter})`}>
                 <Switch
                   checked={on}
                   // At least one drive stays: there'd be nothing to search.
@@ -211,28 +226,6 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
   );
 }
 
-function StorageSize({ bytes }: { bytes?: number }) {
-  return <span className="text-[13px] leading-4 text-zinc-400 tabular-nums">{bytes === undefined ? "…" : fileSize(bytes)}</span>;
-}
-
-function IndexingProgress({ progress: p }: { progress?: IndexProgress }) {
-  const pct = p && p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : null;
-  return (
-    <span className="flex items-center gap-2">
-      <span>
-        {p ? `${p.phase === "reading" ? "Reading" : "Saving"} ${p.drive}` : "Indexing your drives"}
-        {pct !== null && ` · ${pct}%`}
-      </span>
-      <span className="h-1 w-24 overflow-hidden rounded-full bg-white/10">
-        <span
-          className="block h-full rounded-full bg-white transition-[width] duration-300"
-          style={{ width: pct === null ? "10%" : `${pct}%` }}
-        />
-      </span>
-    </span>
-  );
-}
-
 function ExcludedFolders({ folders, onChange }: { folders: string[]; onChange: (folders: string[]) => Promise<string | null> }) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -250,8 +243,8 @@ function ExcludedFolders({ folders, onChange }: { folders: string[]; onChange: (
   };
 
   const browse = async () => {
-    const picked = await openDialog({ directory: true, multiple: false, title: "Choose a folder not to index" }).catch(
-      () => null
+    const picked = await keepOpenWhile(
+      openDialog({ directory: true, multiple: false, title: "Choose a folder not to index" }).catch(() => null)
     );
     if (typeof picked === "string") add(picked);
   };
@@ -280,7 +273,7 @@ function ExcludedFolders({ folders, onChange }: { folders: string[]; onChange: (
             placeholder="D:\Archive or a folder name"
             aria-label="Folder to exclude"
             spellCheck={false}
-            className="h-7 w-full rounded-md bg-white/[0.07] px-2.5 text-[12px] leading-4 text-white outline-hidden placeholder:text-zinc-500 focus:ring-1 focus:ring-[#6B97FF] focus:ring-inset"
+            className="h-7 w-full rounded-md bg-white/[0.07] px-2.5 text-[11px] leading-4 text-white outline-hidden placeholder:text-zinc-500 focus:ring-1 focus:ring-[#6B97FF] focus:ring-inset"
           />
         }
         error={error}

@@ -33,16 +33,16 @@ func TestApplyExcludesUserFolders(t *testing.T) {
 	dir := entryInUse | entryDir
 	file := entryInUse
 	s := &mftScan{entries: make([]entry, 40), links: map[uint32][]link{}}
-	s.entries[5] = entry{parent: 5, flags: dir, name: "."}
-	s.entries[16] = entry{parent: 5, flags: dir, name: "Archive"} // C:\Archive, by full path
-	s.entries[17] = entry{parent: 16, flags: file, name: "old.zip"}
-	s.entries[18] = entry{parent: 5, flags: dir, name: "Work"}
-	s.entries[19] = entry{parent: 18, flags: dir, name: "Archive"} // same name elsewhere: kept
-	s.entries[20] = entry{parent: 19, flags: file, name: "survivor.zip"}
-	s.entries[21] = entry{parent: 18, flags: dir, name: "BUILD"} // by name, any case
-	s.entries[22] = entry{parent: 21, flags: file, name: "out.o"}
-	s.entries[23] = entry{parent: 18, flags: dir, name: "Secret"} // D:\Work\Secret: other drive
-	s.entries[24] = entry{parent: 23, flags: file, name: "kept-secret.txt"}
+	s.set(5, 5, dir, ".")
+	s.set(16, 5, dir, "Archive") // C:\Archive, by full path
+	s.set(17, 16, file, "old.zip")
+	s.set(18, 5, dir, "Work")
+	s.set(19, 18, dir, "Archive") // same name elsewhere: kept
+	s.set(20, 19, file, "survivor.zip")
+	s.set(21, 18, dir, "BUILD") // by name, any case
+	s.set(22, 21, file, "out.o")
+	s.set(23, 18, dir, "Secret") // D:\Work\Secret: other drive
+	s.set(24, 23, file, "kept-secret.txt")
 
 	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	ix.Apply(Options{

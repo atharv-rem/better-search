@@ -14,8 +14,10 @@ mod settings;
 mod web_search;
 use settings::SettingsState;
 
-/// The Go sidecar. It only runs while the search or settings window is open;
-/// closing both stops it so the app sits idle in the background.
+/// The Go sidecar. It runs for as long as the app does: while every window is
+/// hidden it's told to give its memory back (`trim_backend`) rather than
+/// stopped, so Alt+S searches at once instead of waiting for it to start and
+/// open the index. Restarted on the next show if it ever exits.
 #[derive(Default)]
 struct Backend(Mutex<Option<CommandChild>>);
 
@@ -29,7 +31,7 @@ fn start_backend(app: &AppHandle) {
     // The indexer reads the user's exclusions from settings.json.
     let spawned = app
         .shell()
-        .sidecar("better-search-backend")
+        .sidecar("better-search-helper")
         .map(|cmd| match settings::path(app) {
             Some(path) => cmd.arg("-settings").arg(path),
             None => cmd,
@@ -91,13 +93,10 @@ fn start_watcher(app: &AppHandle) {
 
     let spawned = app
         .shell()
-        .sidecar("better-search-backend")
-        .map(|cmd| {
-            let cmd = cmd.arg("-watch");
-            match settings::path(app) {
-                Some(path) => cmd.arg("-settings").arg(path),
-                None => cmd,
-            }
+        .sidecar("better-search-watcher")
+        .map(|cmd| match settings::path(app) {
+            Some(path) => cmd.arg("-settings").arg(path),
+            None => cmd,
         })
         .and_then(|cmd| cmd.spawn());
     let (mut rx, child) = match spawned {
@@ -136,6 +135,14 @@ fn stop_watcher(app: &AppHandle) {
     let child = app.state::<Watcher>().0.lock().unwrap().take();
     if let Some(child) = child {
         let _ = child.kill();
+    }
+}
+
+/// The app's windows are all hidden: the backend frees its caches and pages
+/// out until the next request, sitting at a few MB.
+fn trim_backend(app: &AppHandle) {
+    if let Some(child) = app.state::<Backend>().0.lock().unwrap().as_mut() {
+        let _ = child.write(b"{\"type\":\"trim\"}\n");
     }
 }
 
@@ -335,9 +342,10 @@ fn open_search(app: &AppHandle) {
 
 fn hide_search(window: &WebviewWindow) {
     let _ = window.hide();
-    // The settings window shows the index and can rebuild it.
-    if window.app_handle().get_webview_window(SETTINGS_LABEL).is_none() {
-        stop_backend(window.app_handle());
+    // The settings and first-run windows show the index and can rebuild it.
+    let app = window.app_handle();
+    if app.get_webview_window(SETTINGS_LABEL).is_none() && app.get_webview_window(ONBOARDING_LABEL).is_none() {
+        went_idle(app);
     }
     set_webview_low_memory(window, true);
 }
@@ -354,6 +362,33 @@ fn toggle_search(app: &AppHandle) {
 /// the search by its label.
 const SETTINGS_LABEL: &str = "settings";
 
+/// A small undecorated window of the app's own pages (settings, the first-run
+/// screen): the same page as the search, told apart by its label.
+fn build_panel(app: &AppHandle, label: &str, title: &str, width: f64, height: f64) -> tauri::Result<WebviewWindow> {
+    // WebView2 shares one browser process between the windows, which only
+    // works if they're started with the same arguments.
+    let browser_args = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == SEARCH_LABEL)
+        .and_then(|w| w.additional_browser_args.clone());
+    let mut builder = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("index.html".into()))
+        .title(title)
+        .inner_size(width, height)
+        .resizable(false)
+        .maximizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .center();
+    if let Some(args) = browser_args {
+        builder = builder.additional_browser_args(&args);
+    }
+    builder.build()
+}
+
 /// Async, as building a webview from a command on the main thread deadlocks.
 #[tauri::command]
 async fn open_settings(app: AppHandle) -> Result<(), String> {
@@ -364,28 +399,28 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     start_backend(&app);
-    // WebView2 shares one browser process between the windows, which only
-    // works if they're started with the same arguments.
-    let browser_args = app
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|w| w.label == SEARCH_LABEL)
-        .and_then(|w| w.additional_browser_args.clone());
-    let mut builder = tauri::WebviewWindowBuilder::new(&app, SETTINGS_LABEL, tauri::WebviewUrl::App("index.html".into()))
-        .title("Better Search settings")
-        .inner_size(880.0, 560.0)
-        .resizable(false)
-        .maximizable(false)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .center();
-    if let Some(args) = browser_args {
-        builder = builder.additional_browser_args(&args);
+    build_panel(&app, SETTINGS_LABEL, "Better Search settings", 880.0, 560.0)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// The first-run screen: asks for administrator rights, builds the first
+/// index and says when it's done. Opened on start until the user has been
+/// through it (`Settings::onboarded`).
+const ONBOARDING_LABEL: &str = "onboarding";
+
+fn open_onboarding(app: &AppHandle) {
+    if app.get_webview_window(ONBOARDING_LABEL).is_some() {
+        return;
     }
-    builder.build().map(|_| ()).map_err(|e| e.to_string())
+    start_backend(app);
+    // Building a webview waits on the main thread, so do it from another task.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = build_panel(&app, ONBOARDING_LABEL, "Welcome to Better Search", 560.0, 460.0) {
+            log::error!("Failed to open the first-run screen: {e}");
+        }
+    });
 }
 
 /// Quits for good; otherwise the app keeps running in the background.
@@ -441,6 +476,7 @@ fn hide_window(window: WebviewWindow) {
 fn search_ready(window: WebviewWindow) {
     if !window.is_visible().unwrap_or(true) {
         set_webview_low_memory(&window, true);
+        went_idle(window.app_handle());
     }
 }
 
@@ -573,24 +609,82 @@ fn open_url(app: AppHandle, url: String, browser: Option<String>) -> Result<(), 
 #[cfg(windows)]
 #[tauri::command]
 fn memory_usage() -> u64 {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    let me = Pid::from_u32(std::process::id());
-    let mut family = vec![me];
-    let mut total = 0;
+    app_processes().into_iter().map(private_working_set).sum()
+}
+
+/// This process and every descendant (the WebView2 processes and the
+/// sidecars), from one snapshot of the system's process list: just ids and
+/// parents, where a full process listing reads every process's details.
+#[cfg(windows)]
+fn app_processes() -> Vec<u32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+
+    let mut family = vec![std::process::id()];
+    let mut links = Vec::new(); // (process, parent)
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return family;
+        };
+        let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            links.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
     let mut i = 0;
     while i < family.len() {
         let pid = family[i];
         i += 1;
-        total += private_working_set(pid.as_u32());
-        for (child, p) in sys.processes() {
-            if p.parent() == Some(pid) && !family.contains(child) {
-                family.push(*child);
+        for &(child, parent) in &links {
+            if parent == pid && !family.contains(&child) {
+                family.push(child);
             }
         }
     }
-    total
+    family
+}
+
+/// Moves the app's pages out of RAM while all its windows are hidden: the
+/// shell's leftovers from making icons and previews, and the suspended
+/// WebView2 processes, which Windows would otherwise only trim minutes
+/// later. They stay in memory on Windows' standby list, so the next Alt+S
+/// gets them back without reading the disk.
+#[cfg(windows)]
+fn trim_app_memory() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA};
+
+    for pid in app_processes() {
+        unsafe {
+            if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA, false, pid) {
+                let _ = EmptyWorkingSet(handle);
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn trim_app_memory() {}
+
+/// Every window is hidden: the backend frees its caches, and once the hidden
+/// webview has had a moment to suspend, the app's memory is trimmed. Skipped
+/// if a window came back in the meantime.
+fn went_idle(app: &AppHandle) {
+    trim_backend(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if !app.webview_windows().values().any(|w| w.is_visible().unwrap_or(false)) {
+            trim_app_memory();
+        }
+    });
 }
 
 /// 0 if the process has exited or can't be opened.
@@ -619,19 +713,28 @@ fn private_working_set(pid: u32) -> u64 {
     }
 }
 
-/// The Explorer icon for a path as a `data:image/png` URL, or None if Windows
-/// has none. Runs off the main thread: the shell may touch the disk.
+/// Images go to the page as the file's raw bytes, no bytes meaning none:
+/// a third smaller than base64 data URLs, and the page keeps them as blobs
+/// rather than strings (see image-cache.ts).
+fn image_response(image: Option<Vec<u8>>) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(image.unwrap_or_default())
+}
+
+/// The Explorer icon for a path as a PNG. Runs off the main thread: the shell
+/// may touch the disk.
 #[cfg(windows)]
 #[tauri::command]
-async fn file_icon(path: String) -> Option<String> {
-    tauri::async_runtime::spawn_blocking(move || shell_icon_png(&path))
-        .await
-        .ok()
-        .flatten()
+async fn file_icon(path: String) -> tauri::ipc::Response {
+    image_response(
+        tauri::async_runtime::spawn_blocking(move || shell_icon_png(&path))
+            .await
+            .ok()
+            .flatten(),
+    )
 }
 
 #[cfg(windows)]
-fn shell_icon_png(path: &str) -> Option<String> {
+fn shell_icon_png(path: &str) -> Option<Vec<u8>> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::DeleteObject;
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
@@ -655,7 +758,7 @@ fn shell_icon_png(path: &str) -> Option<String> {
         let mut icon = ICONINFO::default();
         let mut png = None;
         if GetIconInfo(info.hIcon, &mut icon).is_ok() {
-            png = bitmap_data_url(icon.hbmColor, false);
+            png = encode_bitmap(icon.hbmColor, false);
             let _ = DeleteObject(icon.hbmColor.into());
             let _ = DeleteObject(icon.hbmMask.into());
         }
@@ -665,25 +768,27 @@ fn shell_icon_png(path: &str) -> Option<String> {
 }
 
 /// Explorer's thumbnail for a file (photos, video frames, PDF and Office
-/// pages, ...) as a `data:` URL, fitted within `size` × `size` physical
+/// pages, ...) as a JPEG or PNG, fitted within `size` × `size` physical
 /// pixels. None if Windows has no thumbnail for it, only an icon.
 #[cfg(windows)]
 #[tauri::command]
-async fn file_thumbnail(path: String, size: u32) -> Option<String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let size = size.clamp(16, 1024);
-        shell_thumbnail(&path, size).or_else(|| {
-            // Without Acrobat or a similar app, Windows has no PDF thumbnails.
-            path.to_lowercase().ends_with(".pdf").then(|| pdf_first_page(&path, size)).flatten()
+async fn file_thumbnail(path: String, size: u32) -> tauri::ipc::Response {
+    image_response(
+        tauri::async_runtime::spawn_blocking(move || {
+            let size = size.clamp(16, 1024);
+            shell_thumbnail(&path, size).or_else(|| {
+                // Without Acrobat or a similar app, Windows has no PDF thumbnails.
+                path.to_lowercase().ends_with(".pdf").then(|| pdf_first_page(&path, size)).flatten()
+            })
         })
-    })
         .await
         .ok()
-        .flatten()
+        .flatten(),
+    )
 }
 
 #[cfg(windows)]
-fn shell_thumbnail(path: &str, size: u32) -> Option<String> {
+fn shell_thumbnail(path: &str, size: u32) -> Option<Vec<u8>> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
@@ -694,30 +799,29 @@ fn shell_thumbnail(path: &str, size: u32) -> Option<String> {
         // Thumbnail providers are COM objects; this is a blocking-pool thread.
         let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-        let url = SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(PCWSTR(wide.as_ptr()), None)
+        let image = SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(PCWSTR(wide.as_ptr()), None)
             .and_then(|factory| {
                 let side = size as i32;
                 factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_THUMBNAILONLY)
             })
             .ok()
             .and_then(|bitmap| {
-                let url = bitmap_data_url(bitmap, true);
+                let image = encode_bitmap(bitmap, true);
                 let _ = DeleteObject(bitmap.into());
-                url
+                image
             });
         if com {
             CoUninitialize();
         }
-        url
+        image
     }
 }
 
-/// A PDF's first page as a `data:image/png` URL, fitted within `size` ×
-/// `size` physical pixels, rendered by Windows' own PDF engine (Edge's).
-/// None for password-protected or broken files.
+/// A PDF's first page as a PNG, fitted within `size` × `size` physical
+/// pixels, rendered by Windows' own PDF engine (Edge's). None for
+/// password-protected or broken files.
 #[cfg(windows)]
-fn pdf_first_page(path: &str, size: u32) -> Option<String> {
-    use base64::Engine;
+fn pdf_first_page(path: &str, size: u32) -> Option<Vec<u8>> {
     use windows::core::HSTRING;
     use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
     use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
@@ -751,20 +855,15 @@ fn pdf_first_page(path: &str, size: u32) -> Option<String> {
         if com {
             CoUninitialize();
         }
-        let png = png.ok().filter(|png| !png.is_empty())?;
-        Some(format!(
-            "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(png)
-        ))
+        png.ok().filter(|png| !png.is_empty())
     }
 }
 
-/// A 32-bit bitmap as a `data:` URL: a PNG, or with `jpeg_if_opaque` a JPEG
-/// when it has no transparency (photos are several times smaller as JPEG).
-/// The caller still owns `bitmap`.
+/// A 32-bit bitmap encoded as a PNG, or with `jpeg_if_opaque` a JPEG when it
+/// has no transparency (photos are several times smaller as JPEG). The caller
+/// still owns `bitmap`.
 #[cfg(windows)]
-unsafe fn bitmap_data_url(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, jpeg_if_opaque: bool) -> Option<String> {
-    use base64::Engine;
+unsafe fn encode_bitmap(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, jpeg_if_opaque: bool) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, DeleteDC, GetDIBits, GetObjectW, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
         BI_RGB, DIB_RGB_COLORS,
@@ -819,10 +918,7 @@ unsafe fn bitmap_data_url(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, jpeg_i
         jpeg_encoder::Encoder::new(&mut out, 85)
             .encode(&buf, w.try_into().ok()?, h.try_into().ok()?, jpeg_encoder::ColorType::Rgba)
             .ok()?;
-        return Some(format!(
-            "data:image/jpeg;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(out)
-        ));
+        return Some(out);
     }
     {
         let mut enc = png::Encoder::new(&mut out, w as u32, h as u32);
@@ -830,16 +926,13 @@ unsafe fn bitmap_data_url(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, jpeg_i
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header().ok()?.write_image_data(&buf).ok()?;
     }
-    Some(format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(out)
-    ))
+    Some(out)
 }
 
 #[cfg(not(windows))]
 #[tauri::command]
-async fn file_thumbnail(_path: String, _size: u32) -> Option<String> {
-    None
+async fn file_thumbnail(_path: String, _size: u32) -> tauri::ipc::Response {
+    image_response(None)
 }
 
 /// The preview shows a screenful of text; this is plenty for that.
@@ -933,8 +1026,8 @@ async fn folder_preview(path: String) -> Option<FolderPreview> {
 
 #[cfg(not(windows))]
 #[tauri::command]
-async fn file_icon(_path: String) -> Option<String> {
-    None
+async fn file_icon(_path: String) -> tauri::ipc::Response {
+    image_response(None)
 }
 
 #[cfg(not(windows))]
@@ -970,11 +1063,19 @@ pub fn run() {
         .manage(Backend::default())
         .manage(Watcher::default())
         .manage(BarLayout::default())
-        .plugin(tauri_plugin_autostart::Builder::new().build())
+        // The app is named "Better Search" (productName, which Task Manager
+        // shows); its login entry and log file keep the names they had.
+        .plugin(tauri_plugin_autostart::Builder::new().app_name("better-search").build())
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("better-search".into()),
+                    }),
+                ])
                 .level(tauri_plugin_log::log::LevelFilter::Info)
                 .build(),
         )
@@ -1020,8 +1121,13 @@ pub fn run() {
                 log::error!("{e} Falling back to {}.", settings::DEFAULT_SHORTCUT);
                 settings::register_shortcut(app.handle(), settings::DEFAULT_SHORTCUT)?;
             }
+            let first_run = !saved.onboarded;
             app.manage(SettingsState(Mutex::new(saved)));
+            if first_run {
+                open_onboarding(app.handle());
+            }
             start_watcher(app.handle());
+            start_backend(app.handle());
 
             // Build the window now, hidden, so the first Alt+S only has to
             // show it instead of waiting on WebView2 to start. The page
@@ -1042,17 +1148,19 @@ pub fn run() {
             // Destroying the search window closes the last window, which would
             // quit the app; keep running in the background for Alt+S.
             tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-            // Really quitting (an update, a restart): don't leave the watcher behind.
-            tauri::RunEvent::Exit => stop_watcher(app),
-            // Settings closed: the backend only stays for an open search.
+            // Really quitting (an update, a restart): don't leave the sidecars behind.
+            tauri::RunEvent::Exit => {
+                stop_backend(app);
+                stop_watcher(app);
+            }
+            // Settings or the first-run screen closed: with nothing else
+            // shown, the backend can give its memory back.
             tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. }
-                if label == SETTINGS_LABEL =>
+                if label == SETTINGS_LABEL || label == ONBOARDING_LABEL =>
             {
-                let searching = app
-                    .get_webview_window(SEARCH_LABEL)
-                    .is_some_and(|w| w.is_visible().unwrap_or(false));
-                if !searching {
-                    stop_backend(app);
+                let busy = |l: &str| app.get_webview_window(l).is_some_and(|w| w.is_visible().unwrap_or(false));
+                if !busy(SEARCH_LABEL) && !busy(SETTINGS_LABEL) && !busy(ONBOARDING_LABEL) {
+                    went_idle(app);
                 }
             }
             _ => {}

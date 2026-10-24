@@ -12,7 +12,16 @@ import (
 )
 
 // CacheLimit is the page cache each connection may fill (cache_size in Open).
-const CacheLimit = 64 << 20
+// Small, as reads come from the memory-mapped file (mmapSize).
+const CacheLimit = 4 << 20
+
+// mmapSize is how much of the index file is read through a memory map:
+// beyond any index this app builds, so all of it.
+const mmapSize = 2 << 30
+
+// bulkCacheSize is the page cache (in KiB, as cache_size takes it) for a full
+// index's write transaction, which writes far more pages than it reads.
+const bulkCacheSize = 64 << 10
 
 // CacheUsed is the memory SQLite's page cache holds across the pool's open
 // connections, in bytes.
@@ -70,4 +79,13 @@ func connCacheUsed(driverConn any) (int64, error) {
 	// p is libc heap memory, not Go memory, so the GC never moves it (go vet
 	// can't tell and warns).
 	return int64(*(*int32)(unsafe.Pointer(p))), nil
+}
+
+// Trim frees what the index holds in memory while the app is idle: the idle
+// connection's page cache and the cached folder paths. Both refill from the
+// memory-mapped file on the next search.
+func (d *DB) Trim() {
+	d.sql.SetMaxIdleConns(0) // closes the idle connection
+	d.sql.SetMaxIdleConns(1)
+	d.ClearCache()
 }
