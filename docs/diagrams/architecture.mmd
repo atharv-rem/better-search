@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph App["Better Search · Rust shell"]
+    direction LR
+    UI["Search window + Settings<br/>React in WebView2"]
+    Shell["Icons, previews, thumbnails<br/>Windows Shell"]
+  end
+  subgraph Go["Go programs"]
+    direction LR
+    Helper["Search helper"]
+    Indexer["Indexer<br/>runs as admin"]
+    Watcher["File watcher"]
+  end
+  DB[("SQLite index · FTS5 trigram")]
+
+  UI --> Shell
+  UI <-->|"JSON lines · stdin/stdout"| Helper
+  Helper -->|starts| Indexer
+  Helper -->|queries| DB
+  Indexer -->|builds| DB
+  Watcher -->|keeps current| DB

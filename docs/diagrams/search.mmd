@@ -1,0 +1,15 @@
+sequenceDiagram
+  autonumber
+  actor You
+  participant UI as Search window
+  participant Helper as Search helper
+  participant Index as SQLite index
+
+  You->>UI: type "invoice 2024"
+  Note over UI: waits 100 ms for typing to pause
+  UI->>Helper: query (JSON line)
+  Helper->>Index: trigram lookup, every word must match
+  Index-->>Helper: matching names
+  Note over Helper: ranks exact names first,<br/>then apps, folders, other files
+  Helper-->>UI: ranked results
+  UI-->>You: list + preview of the top result

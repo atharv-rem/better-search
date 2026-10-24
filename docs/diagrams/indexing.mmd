@@ -1,0 +1,14 @@
+flowchart TB
+  subgraph First["First run"]
+    direction LR
+    UAC["UAC prompt"] --> MFT["Indexer reads each drive's<br/>Master File Table"] --> Build[("Index built<br/>about 10 s per 2M files")]
+  end
+  subgraph Every["Every start"]
+    direction LR
+    Start["Compare folder<br/>modification times"] --> Catch["Catch up on changes<br/>made while closed"]
+  end
+  subgraph Live["While running"]
+    direction LR
+    Watch["ReadDirectoryChangesW<br/>reports each change"] --> Apply["Watcher updates the index"]
+  end
+  First --> Every --> Live
