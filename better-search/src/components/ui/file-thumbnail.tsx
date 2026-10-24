@@ -6,16 +6,17 @@ import { useShape } from "@/lib/shape-context";
 
 // ─── Lazy pdfjs loader ────────────────────────────────────────────────────
 // Imports pdfjs-dist on first PDF, caches the module, and points the worker
-// at the matching CDN build. Consumers don't need bundler-side worker config.
+// at the worker bundled with the app: nothing is fetched from a CDN.
 type PdfjsModule = typeof import("pdfjs-dist");
 let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
 async function loadPdfjs(): Promise<PdfjsModule> {
   if (!pdfjsPromise) {
-    pdfjsPromise = import("pdfjs-dist").then((mod) => {
-      if (!mod.GlobalWorkerOptions.workerSrc) {
-        mod.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${mod.version}/build/pdf.worker.min.mjs`;
-      }
+    pdfjsPromise = Promise.all([
+      import("pdfjs-dist"),
+      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+    ]).then(([mod, worker]) => {
+      if (!mod.GlobalWorkerOptions.workerSrc) mod.GlobalWorkerOptions.workerSrc = worker.default;
       return mod;
     });
   }

@@ -8,7 +8,10 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
+mod docx;
+mod recent;
 mod settings;
+mod web_search;
 use settings::SettingsState;
 
 /// The Go sidecar. It only runs while the search or settings window is open;
@@ -71,6 +74,69 @@ fn start_backend(app: &AppHandle) {
             }
         }
     });
+}
+
+/// The Go watcher: keeps the index current from filesystem changes. Unlike the
+/// search sidecar it runs for as long as the app does; Windows hands it each
+/// change, so it uses no CPU between them.
+#[derive(Default)]
+struct Watcher(Mutex<Option<CommandChild>>);
+
+fn start_watcher(app: &AppHandle) {
+    let state = app.state::<Watcher>();
+    let mut current = state.0.lock().unwrap();
+    if current.is_some() {
+        return;
+    }
+
+    let spawned = app
+        .shell()
+        .sidecar("better-search-backend")
+        .map(|cmd| {
+            let cmd = cmd.arg("-watch");
+            match settings::path(app) {
+                Some(path) => cmd.arg("-settings").arg(path),
+                None => cmd,
+            }
+        })
+        .and_then(|cmd| cmd.spawn());
+    let (mut rx, child) = match spawned {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to start watcher: {e}");
+            return;
+        }
+    };
+    let pid = child.pid();
+    *current = Some(child);
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
+                    log::info!("[watcher] {}", String::from_utf8_lossy(&line).trim_end());
+                }
+                CommandEvent::Terminated(status) => {
+                    let state = app.state::<Watcher>();
+                    let mut current = state.0.lock().unwrap();
+                    if current.as_ref().map(|c| c.pid()) == Some(pid) {
+                        *current = None;
+                        log::warn!("Watcher exited: {status:?}");
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+fn stop_watcher(app: &AppHandle) {
+    let child = app.state::<Watcher>().0.lock().unwrap().take();
+    if let Some(child) = child {
+        let _ = child.kill();
+    }
 }
 
 fn stop_backend(app: &AppHandle) {
@@ -326,6 +392,7 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     stop_backend(&app);
+    stop_watcher(&app);
     app.exit(0);
 }
 
@@ -471,12 +538,13 @@ fn list_browsers() -> Vec<Browser> {
 }
 
 /// Opens a web page in the chosen browser, or the default one when `browser`
-/// is None. Only https URLs, and only browsers from `installed_browsers`: the
-/// page builds both from the user's input, nothing else should reach the shell.
+/// is None. Only web pages (a search provider's results can be plain http),
+/// and only browsers from `installed_browsers`: the page builds both from the
+/// user's input, nothing else should reach the shell.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String, browser: Option<String>) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err("only https URLs can be opened".into());
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("only web pages can be opened".into());
     }
     let Some(id) = browser.filter(|id| id != "default") else {
         return app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string());
@@ -485,8 +553,13 @@ fn open_url(app: AppHandle, url: String, browser: Option<String>) -> Result<(), 
         .into_iter()
         .find(|b| b.id == id)
         .ok_or_else(|| format!("browser not installed: {id}"))?;
+    // The browser's own logging (Firefox prints its startup errors) shouldn't
+    // land in this app's console.
     std::process::Command::new(&chosen.exe)
         .arg(&url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -870,10 +943,32 @@ fn memory_usage() -> u64 {
     0
 }
 
+/// Whether this build can update itself: the updater needs its signing key
+/// and update address in tauri.conf.json ("plugins" > "updater").
+fn updates_configured(config: &tauri::Config) -> bool {
+    config.plugins.0.contains_key("updater")
+}
+
+/// For the About page, which says so when this build can't update.
+#[tauri::command]
+fn can_update(app: AppHandle) -> bool {
+    updates_configured(app.config())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    let builder = tauri::Builder::default();
+    // Without its config the updater stops the app from starting, so a build
+    // without it just doesn't update.
+    let builder = if updates_configured(context.config()) {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
+    };
+    builder
         .manage(Backend::default())
+        .manage(Watcher::default())
         .manage(BarLayout::default())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
@@ -897,14 +992,26 @@ pub fn run() {
             file_thumbnail,
             text_preview,
             folder_preview,
+            docx::docx_preview,
             memory_usage,
             open_settings,
             quit_app,
             open_logs_folder,
+            can_update,
             settings::get_settings,
             settings::update_settings,
             settings::pause_shortcut,
-            settings::list_drives
+            settings::list_drives,
+            settings::storage_usage,
+            web_search::api_keys,
+            web_search::save_api_key,
+            web_search::remove_api_key,
+            web_search::web_search,
+            web_search::favicon,
+            web_search::api_usage,
+            recent::recent_searches,
+            recent::add_recent_search,
+            recent::clear_recent_searches
         ])
         .setup(|app| {
             // No window until the first Alt+S ("create": false in tauri.conf.json).
@@ -914,6 +1021,7 @@ pub fn run() {
                 settings::register_shortcut(app.handle(), settings::DEFAULT_SHORTCUT)?;
             }
             app.manage(SettingsState(Mutex::new(saved)));
+            start_watcher(app.handle());
 
             // Build the window now, hidden, so the first Alt+S only has to
             // show it instead of waiting on WebView2 to start. The page
@@ -928,12 +1036,14 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
             // Destroying the search window closes the last window, which would
             // quit the app; keep running in the background for Alt+S.
             tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+            // Really quitting (an update, a restart): don't leave the watcher behind.
+            tauri::RunEvent::Exit => stop_watcher(app),
             // Settings closed: the backend only stays for an open search.
             tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. }
                 if label == SETTINGS_LABEL =>

@@ -30,6 +30,8 @@ pub struct SearchSettings {
     /// Every search starts from an empty box instead of the last query.
     pub clear_on_close: bool,
     pub show_preview: bool,
+    /// List the last searches under the empty search box (recent.rs).
+    pub remember_recent: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -41,6 +43,10 @@ pub struct WebSettings {
     pub custom_url: String,
     /// A browser id from `list_browsers`, or "default".
     pub browser: String,
+    /// "browser" opens web searches in the browser; one of
+    /// `web_search::PROVIDERS` shows its results in the search window, with
+    /// the user's key for it.
+    pub provider: String,
 }
 
 /// Read by the backend's indexer (indexer/options.go); they apply the next
@@ -70,13 +76,13 @@ impl Default for Settings {
 
 impl Default for SearchSettings {
     fn default() -> Self {
-        Self { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true }
+        Self { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true }
     }
 }
 
 impl Default for WebSettings {
     fn default() -> Self {
-        Self { engine: "google".into(), custom_url: String::new(), browser: "default".into() }
+        Self { engine: "google".into(), custom_url: String::new(), browser: "default".into(), provider: "browser".into() }
     }
 }
 
@@ -123,6 +129,9 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     s.web.custom_url = s.web.custom_url.trim().to_string();
     if s.web.engine == "custom" && (!s.web.custom_url.starts_with("https://") || !s.web.custom_url.contains("%s")) {
         return Err("The search URL has to start with https:// and have %s where the search goes.".into());
+    }
+    if !crate::web_search::PROVIDERS.contains(&s.web.provider.as_str()) {
+        s.web.provider = "browser".into();
     }
 
     let mut folders: Vec<String> = Vec::new();
@@ -175,6 +184,12 @@ pub fn update_settings(app: AppHandle, state: State<'_, SettingsState>, settings
         }
     }
     save(&app, &settings)?;
+    // Turned off: forget the ones kept so far too.
+    if !settings.search.remember_recent {
+        if let Err(e) = crate::recent::clear(&app) {
+            log::warn!("Couldn't clear recent searches: {e}");
+        }
+    }
     *current = settings.clone();
     let _ = app.emit("settings-changed", &settings);
     Ok(settings)
@@ -244,4 +259,22 @@ pub fn list_drives() -> Vec<Drive> {
 #[tauri::command]
 pub fn list_drives() -> Vec<Drive> {
     Vec::new()
+}
+
+/// What the app keeps on disk, in its local data folder.
+#[derive(Serialize)]
+pub struct StorageUsage {
+    /// The backend's SQLite index (database.DefaultPath), with its WAL files.
+    index_bytes: u64,
+}
+
+#[tauri::command]
+pub fn storage_usage(app: AppHandle) -> Result<StorageUsage, String> {
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let index_bytes = ["index.db", "index.db-wal", "index.db-shm"]
+        .iter()
+        .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
+        .map(|m| m.len())
+        .sum();
+    Ok(StorageUsage { index_bytes })
 }

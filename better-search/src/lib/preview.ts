@@ -12,6 +12,8 @@ export type Preview =
   | { kind: "image"; url: string }
   | { kind: "text"; text: string }
   | { kind: "folder"; entries: FolderEntry[]; total: number; more: boolean }
+  /** A document's opening paragraphs, drawn as a page (docx.rs). */
+  | { kind: "page"; paragraphs: { text: string; heading: boolean }[] }
   | { kind: "none" }; // just the file's icon and details
 
 // Read as text before asking Windows for a thumbnail: their thumbnails, if
@@ -19,6 +21,10 @@ export type Preview =
 const TEXT_EXTENSIONS = new Set([
   "txt", "md", "csv", "tsv", "log", "ini", "cfg", "conf", "env", "properties", "gitignore", "editorconfig", "srt",
 ]);
+
+// Word documents, read for their text when Windows has no thumbnail of them
+// (no Office installed).
+const DOCX_EXTENSIONS = new Set(["docx", "docm", "dotx", "dotm"]);
 
 async function loadUncached(result: SearchResult, thumbSize: number): Promise<Preview> {
   if (result.type === "directory") {
@@ -37,6 +43,10 @@ async function loadUncached(result: SearchResult, thumbSize: number): Promise<Pr
   // Images, videos, PDFs, Office files and anything else Windows can draw.
   const url = await invoke<string | null>("file_thumbnail", { path: result.path, size: thumbSize });
   if (url) return { kind: "image", url };
+  if (DOCX_EXTENSIONS.has(extensionOf(result.name))) {
+    const doc = await invoke<Extract<Preview, { kind: "image" | "page" }> | null>("docx_preview", { path: result.path });
+    if (doc) return doc;
+  }
   // An unknown type may still be plain text (README, LICENSE, .nfo).
   if (group === "other") {
     const t = await text();

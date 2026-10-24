@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { CaretDownIcon, CheckIcon, GearSixIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@phosphor-icons/react";
 import { GlobalSearchIcon } from "@/components/global-search-icon";
 import { RamIcon, TimeIcon } from "@/components/stat-icons";
 import { BrowserIcon, DEFAULT_BROWSER, useInstalledBrowsers } from "@/components/browser-icon";
@@ -16,11 +16,13 @@ import { Button } from "@/components/ui/button";
 import { InputMessage } from "@/components/ui/input-message";
 import { PreviewPanel } from "@/components/preview-panel";
 import { SearchResults } from "@/components/search-results";
+import { WebResults } from "@/components/web-results";
 import { TypeFilter } from "@/components/type-filter";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
 import { cn } from "@/lib/utils";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
 import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchUrl, type Settings } from "@/lib/settings";
+import { providerOf, webSearch, type WebResult } from "@/lib/web-search";
 
 type IndexState =
   | { kind: "checking" }
@@ -30,7 +32,18 @@ type IndexState =
   | { kind: "ready" }
   | { kind: "error"; message: string };
 
+/** A web search with the user's search provider, for the query it was for. */
+type WebState =
+  | { kind: "idle" }
+  | { kind: "loading"; query: string }
+  | { kind: "done"; query: string; results: WebResult[] }
+  | { kind: "error"; query: string; message: string };
+
 const SEARCH_DEBOUNCE_MS = 100;
+
+/** Recent searches listed: file searches under the empty search box, web
+ *  searches ("/ cats") under the web-search row while only "/" is typed. */
+const RECENT_SHOWN = 5;
 
 /** "/ cats" searches the web for "cats"; null for an ordinary file search. */
 function webQueryOf(query: string) {
@@ -42,6 +55,9 @@ const ROW_ICON_SIZE = 16;
 
 /** Height of one menu item (16px line with py-1), for sizing the window. */
 const BROWSER_ITEM_HEIGHT = 24;
+
+/** The web-search row (p-3 around a 16px line), above a provider's results. */
+const WEB_ROW_HEIGHT = 40;
 
 function searchWeb(web: Settings["web"], text: string, browser: string) {
   return invoke("open_url", { url: webSearchUrl(web, text), browser }).then(() => hideWindow());
@@ -143,6 +159,26 @@ function App() {
   const settings = useSettings() ?? DEFAULT_SETTINGS;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  // Newest first; read again on every show (the settings page may have
+  // cleared them).
+  const [recent, setRecent] = useState<string[]>([]);
+  useEffect(() => {
+    invoke<string[]>("recent_searches")
+      .then(setRecent)
+      .catch(() => {});
+  }, [shownAt]);
+
+  /** Keeps `text` as a recent search: called once something came of it. */
+  const remember = useCallback((text: string) => {
+    let t = text.trim();
+    // "/cats" and "/ cats" are the same web search.
+    if (t.startsWith("/")) t = `/${t.slice(1).trim()}`;
+    if (!t || t === "/" || !settingsRef.current.search.remember_recent) return;
+    setRecent((r) => [t, ...r.filter((q) => q !== t)]);
+    invoke("add_recent_search", { query: t }).catch(() => {});
+  }, []);
   const { max_results: maxResults, enter_reveals: enterReveals, show_preview: showPreview } = settings.search;
   const browsers = useInstalledBrowsers(shownAt);
   // Local too, so Tab can cycle faster than the save comes back.
@@ -159,6 +195,24 @@ function App() {
 
   const ready = index.kind === "ready";
   const webQuery = webQueryOf(query);
+  const rememberRecent = settings.search.remember_recent;
+  const recentFiles = useMemo(() => recent.filter((q) => !q.startsWith("/")).slice(0, RECENT_SHOWN), [recent]);
+  const recentWeb = useMemo(() => recent.filter((q) => q.startsWith("/")).slice(0, RECENT_SHOWN), [recent]);
+  // Listed while only "/" is typed; ArrowDown moves into the list.
+  const showRecentWeb = rememberRecent && webQuery === "" && recentWeb.length > 0;
+  const [recentWebActive, setRecentWebActive] = useState<number | null>(null);
+  useEffect(() => {
+    if (!showRecentWeb) setRecentWebActive(null);
+  }, [showRecentWeb]);
+  // With a provider, web searches show their results here; without, they open
+  // in the browser.
+  const provider = providerOf(settings.web.provider);
+  const [webState, setWebState] = useState<WebState>({ kind: "idle" });
+  const [webActive, setWebActive] = useState<number | null>(null);
+  const webSeq = useRef(0);
+  // Results are for the query they were searched with; typing on hides them.
+  const webShown = provider && webState.kind !== "idle" && webState.query === webQuery ? webState : null;
+  const webResults = webShown?.kind === "done" ? webShown.results : [];
 
   const groups = useMemo(() => countGroups(results), [results]);
   // A new search may have no results of the chosen type: show everything then.
@@ -291,6 +345,7 @@ function App() {
   }, [query, ready, shownAt, maxResults]);
 
   const openResult = useCallback(async (r: SearchResult, reveal: boolean) => {
+    remember(queryRef.current);
     // Record the open before hiding: hiding stops the backend.
     await Promise.race([backend.markOpened(r.id).catch(() => {}), new Promise((ok) => setTimeout(ok, 300))]);
     try {
@@ -300,7 +355,7 @@ function App() {
       return;
     }
     await hideWindow();
-  }, []);
+  }, [remember]);
 
   const requestPermission = useCallback(async () => {
     setIndex({ kind: "asking" });
@@ -324,6 +379,35 @@ function App() {
     }
   }, []);
 
+  // Only on Enter, not as you type: every search uses the user's credits.
+  const searchProvider = (text: string) => {
+    if (!provider || !text) return;
+    const seq = ++webSeq.current;
+    setWebState({ kind: "loading", query: text });
+    webSearch(provider.id, text)
+      .then((results) => {
+        if (seq !== webSeq.current) return;
+        setWebState({ kind: "done", query: text, results });
+        setWebActive(results.length ? 0 : null);
+      })
+      .catch((err: Error) => seq === webSeq.current && setWebState({ kind: "error", query: text, message: err.message }));
+  };
+
+  /** Runs a recent web search again, as Enter on it would. */
+  const runRecentWeb = (text: string) => {
+    const q = webQueryOf(text);
+    if (!q) return;
+    setQuery(text);
+    remember(text);
+    if (provider) searchProvider(q);
+    else searchWeb(settings.web, q, browser.id).catch((err) => console.error("Failed to open browser:", err));
+  };
+
+  const openWebResult = (r: WebResult) =>
+    invoke("open_url", { url: r.url, browser: browser.id })
+      .then(() => hideWindow())
+      .catch((err) => console.error("Failed to open browser:", err));
+
   const chooseBrowser = (id: string) => {
     setSavedBrowser(id);
     const s = settingsRef.current;
@@ -335,6 +419,9 @@ function App() {
   const handleKeyDownCapture = (e: ReactKeyboardEvent) => {
     // The browser menu renders in a portal, but its keys bubble through here.
     if ((e.target as HTMLElement).closest('[data-slot="dropdown-menu-content"]')) return;
+    // The empty box's arrows, Enter and Escape belong to the recent searches
+    // listed under it (InputMessage's suggestions).
+    if (query === "" && e.key !== "Tab") return;
     if (webQuery !== null) {
       if (e.key === "Tab") {
         // Cycle the browser to search in; Shift+Tab goes back.
@@ -343,10 +430,41 @@ function App() {
         const at = browsers.findIndex((b) => b.id === browser.id);
         const step = e.shiftKey ? -1 : 1;
         chooseBrowser(browsers[(at + step + browsers.length) % browsers.length].id);
+      } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && showRecentWeb) {
+        // Like the empty box's list: ArrowDown enters and walks down,
+        // ArrowUp walks back up and out.
+        e.preventDefault();
+        e.stopPropagation();
+        setRecentWebActive((i) =>
+          e.key === "ArrowDown"
+            ? i === null
+              ? 0
+              : Math.min(i + 1, recentWeb.length - 1)
+            : i === null || i === 0
+              ? null
+              : i - 1
+        );
+      } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && webResults.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        setWebActive((i) => (i === null ? 0 : (i + step + webResults.length) % webResults.length));
       } else if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        if (webQuery) searchWeb(settings.web, webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
+        if (!webQuery) {
+          if (showRecentWeb && recentWebActive !== null) runRecentWeb(recentWeb[recentWebActive]);
+          return;
+        }
+        remember(query);
+        // Ctrl+Enter searches in the browser even with a provider.
+        if (!provider || e.ctrlKey) {
+          searchWeb(settings.web, webQuery, browser.id).catch((err) => console.error("Failed to open browser:", err));
+        } else if (webResults.length) {
+          openWebResult(webResults[webActive ?? 0]);
+        } else if (webShown?.kind !== "loading") {
+          searchProvider(webQuery);
+        }
       }
       return;
     }
@@ -431,6 +549,7 @@ function App() {
           value={query}
           onValueChange={setQuery}
           placeholder="what should i look for you?"
+          suggestions={rememberRecent ? recentFiles : undefined}
           className="gap-0! bg-black! p-[5px]! text-white"
           style={{ boxShadow: panelShadow }}
           textareaProps={{ className: "placeholder:text-zinc-400!" }}
@@ -468,53 +587,96 @@ function App() {
             style={{ boxShadow: panelShadow }}
           >
             {webQuery !== null ? (
-              <div className="flex items-center gap-2 pr-2">
-                <button
-                  type="button"
-                  onClick={() => webQuery && searchWeb(settings.web, webQuery, browser.id)}
-                  className="flex min-w-0 flex-1 items-center gap-2 p-3 pr-0 text-left text-[12px] leading-4"
-                >
-                  <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
-                  <span className="truncate">
-                    {webQuery ? `Search the web for “${webQuery}”` : "Type something to search the web"}
-                  </span>
-                </button>
-                <DropdownMenu onOpenChange={setBrowserMenuOpen}>
-                  <DropdownMenuTrigger
-                    className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1 text-[12px] leading-4 text-white outline-hidden transition-colors hover:bg-white/10 focus-visible:bg-white/10 data-[state=open]:bg-white/10"
-                    aria-label="Browser to search in"
-                  >
-                    <BrowserIcon browser={browser} size={ROW_ICON_SIZE} />
-                    <span className="max-w-28 truncate">{browser.name}</span>
-                    <CaretDownIcon size={ROW_ICON_SIZE} />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    side="bottom"
-                    align="end"
-                    // The window is only as tall as the frame (see the spacer
-                    // below), so don't let the menu flip up while it catches up.
-                    avoidCollisions={false}
-                    className="dark border-white/10 bg-zinc-950 text-white"
-                    // Hand focus back to the search box, not the trigger.
-                    onCloseAutoFocus={(e) => {
-                      e.preventDefault();
-                      searchRef.current?.querySelector("textarea")?.focus();
+              <>
+                <div className="flex items-center gap-2 pr-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!webQuery) return;
+                      remember(query);
+                      if (provider) searchProvider(webQuery);
+                      else searchWeb(settings.web, webQuery, browser.id);
                     }}
+                    className="flex min-w-0 flex-1 items-center gap-2 p-3 pr-0 text-left text-[12px] leading-4"
                   >
-                    {browsers.map((b) => (
-                      <DropdownMenuItem
-                        key={b.id}
-                        className="gap-2 py-1 text-[12px] leading-4 text-white focus:text-white"
-                        onSelect={() => chooseBrowser(b.id)}
-                      >
-                        <BrowserIcon browser={b} size={ROW_ICON_SIZE} />
-                        <span className="truncate">{b.name}</span>
-                        {b.id === browser.id && <CheckIcon size={ROW_ICON_SIZE} className="ml-auto shrink-0" />}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+                    <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
+                    <span className="truncate">
+                      {!webQuery
+                        ? "Type something to search the web"
+                        : provider
+                          ? `Search ${provider.name} for “${webQuery}”`
+                          : `Search the web for “${webQuery}”`}
+                    </span>
+                  </button>
+                  <DropdownMenu onOpenChange={setBrowserMenuOpen}>
+                    <DropdownMenuTrigger
+                      className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1 text-[12px] leading-4 text-white outline-hidden transition-colors hover:bg-white/10 focus-visible:bg-white/10 data-[state=open]:bg-white/10"
+                      aria-label="Browser to search in"
+                    >
+                      <BrowserIcon browser={browser} size={ROW_ICON_SIZE} />
+                      <span className="max-w-28 truncate">{browser.name}</span>
+                      <CaretDownIcon size={ROW_ICON_SIZE} />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      side="bottom"
+                      align="end"
+                      // The window is only as tall as the frame (see the spacer
+                      // below), so don't let the menu flip up while it catches up.
+                      avoidCollisions={false}
+                      className="dark border-white/10 bg-zinc-950 text-white"
+                      // Hand focus back to the search box, not the trigger.
+                      onCloseAutoFocus={(e) => {
+                        e.preventDefault();
+                        searchRef.current?.querySelector("textarea")?.focus();
+                      }}
+                    >
+                      {browsers.map((b) => (
+                        <DropdownMenuItem
+                          key={b.id}
+                          className="gap-2 py-1 text-[12px] leading-4 text-white focus:text-white"
+                          onSelect={() => chooseBrowser(b.id)}
+                        >
+                          <BrowserIcon browser={b} size={ROW_ICON_SIZE} />
+                          <span className="truncate">{b.name}</span>
+                          {b.id === browser.id && <CheckIcon size={ROW_ICON_SIZE} className="ml-auto shrink-0" />}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                {showRecentWeb && (
+                  <RecentWebSearches
+                    searches={recentWeb}
+                    active={recentWebActive}
+                    onActiveChange={setRecentWebActive}
+                    onPick={runRecentWeb}
+                  />
+                )}
+                {webShown && (
+                  <div className="border-t border-white/[0.06]">
+                    {webShown.kind === "loading" ? (
+                      <div className="flex flex-col gap-2 p-3" role="status" aria-label={`Searching ${provider?.name}`}>
+                        <div className="h-3 w-3/4 animate-pulse rounded-sm bg-white/10" />
+                        <div className="h-3 w-1/2 animate-pulse rounded-sm bg-white/10" />
+                      </div>
+                    ) : webShown.kind === "error" ? (
+                      <p role="alert" className="p-3 text-[12px] leading-4 text-zinc-400">
+                        {webShown.message} <span className="text-zinc-500">Ctrl+Enter searches in your browser.</span>
+                      </p>
+                    ) : webResults.length ? (
+                      <WebResults
+                        results={webResults}
+                        activeIndex={webActive}
+                        onActiveIndexChange={setWebActive}
+                        onOpen={openWebResult}
+                        maxHeight={resultsMaxHeight() - WEB_ROW_HEIGHT}
+                      />
+                    ) : (
+                      <p className="p-3 text-[12px] leading-4 text-zinc-400">No results.</p>
+                    )}
+                  </div>
+                )}
+              </>
             ) : showResults ? (
               <SearchResults
                 results={visible}
@@ -533,6 +695,47 @@ function App() {
             covers the frame, so make room for it while it's open. */}
         {browserMenuOpen && webQuery !== null && <div style={{ height: browsers.length * BROWSER_ITEM_HEIGHT }} />}
       </div>
+    </div>
+  );
+}
+
+/** Recent web searches, under the web-search row while only "/" is typed.
+ *  Picking one runs it again. */
+function RecentWebSearches({
+  searches,
+  active,
+  onActiveChange,
+  onPick,
+}: {
+  /** Newest first, each with its "/". */
+  searches: string[];
+  active: number | null;
+  onActiveChange: (index: number | null) => void;
+  onPick: (search: string) => void;
+}) {
+  return (
+    <div
+      role="listbox"
+      aria-label="Recent web searches"
+      onMouseLeave={() => onActiveChange(null)}
+      className="flex flex-col border-t border-white/[0.06] p-1.5"
+    >
+      {searches.map((s, i) => (
+        <div
+          key={s}
+          role="option"
+          aria-selected={i === active}
+          onMouseMove={() => i !== active && onActiveChange(i)}
+          onClick={() => onPick(s)}
+          className={cn(
+            "flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-[12px] leading-4 transition-colors duration-80",
+            i === active ? "bg-white/10 text-white" : "text-zinc-400"
+          )}
+        >
+          <ClockCounterClockwiseIcon size={ROW_ICON_SIZE} className="shrink-0" />
+          <span className="truncate">{s.slice(1)}</span>
+        </div>
+      ))}
     </div>
   );
 }

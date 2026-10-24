@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowsClockwiseIcon, DatabaseIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowsClockwiseIcon, DatabaseIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, HardDrivesIcon, PlusIcon, StackIcon, XIcon } from "@phosphor-icons/react";
 import { backend, BackendError, type IndexProgress, type IndexStatus } from "@/lib/backend";
 import type { Settings } from "@/lib/settings";
 import { ActionButton, Group, Row, Switch } from "@/settings/controls";
@@ -10,6 +10,9 @@ type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
 /** A drive from `list_drives` in settings.rs. */
 type Drive = { letter: string; label: string; ntfs: boolean; total_bytes: number; free_bytes: number };
+
+/** From `storage_usage` in settings.rs. */
+type StorageUsage = { index_bytes: number };
 
 type RebuildState =
   | { kind: "idle"; message?: string }
@@ -36,11 +39,23 @@ function gigabytes(bytes: number) {
   return `${Math.round(bytes / 1e9).toLocaleString()} GB`;
 }
 
+/** In 1024s, like Explorer shows file sizes. */
+function fileSize(bytes: number) {
+  const units = ["bytes", "KB", "MB", "GB"];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return `${bytes.toLocaleString(undefined, { maximumFractionDigits: i < 2 ? 0 : 1 })} ${units[i]}`;
+}
+
 export function IndexingSection({ settings, save }: { settings: Settings; save: Save }) {
   const { indexing } = settings;
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [rebuild, setRebuild] = useState<RebuildState>({ kind: "idle" });
   const [drives, setDrives] = useState<Drive[] | null>(null);
+  const [storage, setStorage] = useState<StorageUsage | null>(null);
   // The exclusions the current index was built with, as far as this window
   // knows: changing them only shows once the index is rebuilt.
   const builtWith = useRef(JSON.stringify(indexing));
@@ -48,14 +63,15 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
   const latestIndexing = useRef(indexing);
   latestIndexing.current = indexing;
 
-  const refreshStatus = useCallback(
-    () =>
-      backend.status().then((s) => {
-        setStatus(s);
-        if (s.indexing) setRebuild((r) => (r.kind === "indexing" ? r : { kind: "indexing" }));
-      }),
-    []
-  );
+  const refreshStatus = useCallback(() => {
+    invoke<StorageUsage>("storage_usage")
+      .then(setStorage)
+      .catch(() => {});
+    return backend.status().then((s) => {
+      setStatus(s);
+      if (s.indexing) setRebuild((r) => (r.kind === "indexing" ? r : { kind: "indexing" }));
+    });
+  }, []);
 
   useEffect(() => {
     // The backend is started with the window; give it a moment if it's not up yet.
@@ -132,6 +148,23 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
         </Row>
       </Group>
 
+      <Group title="Storage">
+        <Row icon={<HardDrivesIcon size={18} />} label="Index database" description="The local SQLite file your files are searched in">
+          <StorageSize bytes={storage?.index_bytes} />
+        </Row>
+        <Row
+          icon={<StackIcon size={18} />}
+          label="Database cache"
+          description={
+            status
+              ? `Recently read parts of the index, kept in memory for faster searches. Up to ${fileSize(status.cache_limit)} per connection.`
+              : "Recently read parts of the index, kept in memory for faster searches"
+          }
+        >
+          <StorageSize bytes={status?.cache_bytes} />
+        </Row>
+      </Group>
+
       <Group title="Drives" footer="Only NTFS drives can be indexed.">
         {drives === null ? (
           <Row label="Finding drives…" />
@@ -176,6 +209,10 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
       />
     </>
   );
+}
+
+function StorageSize({ bytes }: { bytes?: number }) {
+  return <span className="text-[13px] leading-4 text-zinc-400 tabular-nums">{bytes === undefined ? "…" : fileSize(bytes)}</span>;
 }
 
 function IndexingProgress({ progress: p }: { progress?: IndexProgress }) {

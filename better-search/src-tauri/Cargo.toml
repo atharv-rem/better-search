@@ -27,6 +27,14 @@ tokio = { version = "1", features = ["time"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+# Web search through the user's own API keys; already pulled in by the updater.
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider"] }
+# ring for reqwest's TLS, as the updater does, rather than building aws-lc.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Shell icons, previews and web results' favicons as data URLs.
+base64 = "0.22"
+# Reads .docx files (zips) for their preview; already pulled in by the updater.
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 
 # Unoptimized, encoding a preview thumbnail takes several times longer, which
@@ -60,6 +68,8 @@ windows = { version = "0.62", features = [
     "Foundation",
     "Storage",
     "Storage_Streams",
+    # Search providers' API keys, kept in Credential Manager.
+    "Win32_Security_Credentials",
     "Win32_System_Com",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
@@ -70,7 +80,6 @@ windows = { version = "0.62", features = [
 ] }
 # Encodes shell icons; already pulled in by Tauri.
 png = "0.18"
-base64 = "0.22"
 winreg = "0.55"
 # Encodes preview thumbnails of photos, a fraction of their size as PNG.
 jpeg-encoder = "0.7.1"

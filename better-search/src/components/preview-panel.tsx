@@ -60,6 +60,7 @@ function usePreview(result: SearchResult, thumbSize: number) {
 function hasContent(preview: Preview) {
   if (preview.kind === "text") return preview.text.trim() !== "";
   if (preview.kind === "folder") return preview.entries.length > 0;
+  if (preview.kind === "page") return preview.paragraphs.length > 0;
   return preview.kind === "image";
 }
 
@@ -102,6 +103,25 @@ function PreviewContent({ result, preview }: { result: SearchResult; preview: Pr
       >
         {text}
       </pre>
+    );
+  }
+
+  if (preview.kind === "page") {
+    // The top of a white page, like the thumbnail Word would show.
+    return (
+      <div className="flex h-full flex-col gap-1 overflow-hidden bg-white px-2.5 py-2 text-zinc-800" style={fadeBottom}>
+        {preview.paragraphs.map((p, i) => (
+          <p
+            key={i}
+            className={cn(
+              "shrink-0 break-words",
+              p.heading ? "text-[8px] leading-[10px] font-semibold text-black" : "text-[6px] leading-[8px]"
+            )}
+          >
+            {p.text}
+          </p>
+        ))}
+      </div>
     );
   }
 

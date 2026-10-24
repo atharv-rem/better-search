@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { ProviderId } from "@/lib/web-search";
 
 // The user's settings. The shell owns them (settings.rs, which also checks
 // every change); each window reads them with `useSettings` and stays in sync
@@ -15,6 +16,8 @@ export interface Settings {
     enter_reveals: boolean;
     clear_on_close: boolean;
     show_preview: boolean;
+    /** List the last searches under the empty search box. */
+    remember_recent: boolean;
   };
   web: {
     engine: SearchEngineId | "custom";
@@ -22,6 +25,9 @@ export interface Settings {
     custom_url: string;
     /** A browser id from `list_browsers`, or "default". */
     browser: string;
+    /** "browser" opens web searches in the browser; a provider shows its
+     *  results in the search window, with the user's key for it. */
+    provider: ProviderId | "browser";
   };
   /** Applied the next time the index is rebuilt. */
   indexing: {
@@ -34,8 +40,8 @@ export interface Settings {
 /** Until the saved ones arrive. Matches `Settings::default` in settings.rs. */
 export const DEFAULT_SETTINGS: Settings = {
   shortcut: "Alt+S",
-  search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true },
-  web: { engine: "google", custom_url: "", browser: "default" },
+  search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true },
+  web: { engine: "google", custom_url: "", browser: "default", provider: "browser" },
   indexing: { excluded_drives: [], excluded_folders: [] },
 };
 

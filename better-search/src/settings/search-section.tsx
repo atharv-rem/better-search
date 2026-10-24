@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { SEARCH_ENGINES, type Settings } from "@/lib/settings";
 import { BrowserIcon, useInstalledBrowsers } from "@/components/browser-icon";
-import { Group, Row, Segmented, Select, Switch } from "@/settings/controls";
+import { ActionButton, Group, Row, Segmented, Select, Switch } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
@@ -10,6 +11,8 @@ const RESULT_LIMITS = [25, 50, 100, 200, 500].map((n) => ({ value: n, label: `${
 export function SearchSection({ settings, save }: { settings: Settings; save: Save }) {
   const { search } = settings;
   const set = (change: Partial<Settings["search"]>) => save((s) => ({ ...s, search: { ...s.search, ...change } }));
+  const [cleared, setCleared] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
 
   return (
     <>
@@ -48,6 +51,35 @@ export function SearchSection({ settings, save }: { settings: Settings; save: Sa
             checked={search.clear_on_close}
             onChange={(clear_on_close) => set({ clear_on_close })}
             label="Clear the search when closed"
+          />
+        </Row>
+        <Row
+          label="Recent searches"
+          description="List your last searches under the empty search box. Turning this off forgets them."
+          error={clearError}
+        >
+          {search.remember_recent && (
+            <ActionButton
+              disabled={cleared}
+              onClick={() =>
+                invoke("clear_recent_searches")
+                  .then(() => {
+                    setCleared(true);
+                    setClearError(null);
+                  })
+                  .catch((err) => setClearError(String(err)))
+              }
+            >
+              {cleared ? "Cleared" : "Clear"}
+            </ActionButton>
+          )}
+          <Switch
+            checked={search.remember_recent}
+            onChange={(remember_recent) => {
+              setCleared(false);
+              set({ remember_recent });
+            }}
+            label="Recent searches"
           />
         </Row>
       </Group>

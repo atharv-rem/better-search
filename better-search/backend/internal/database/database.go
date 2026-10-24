@@ -57,6 +57,7 @@ type DB struct {
 	// Folder id -> full path, so building result paths doesn't re-walk the tree.
 	dirMu    sync.Mutex
 	dirCache map[int64]string
+	treeSeen int64 // meta tree_version the cache was last checked against
 }
 
 // DefaultPath is %LOCALAPPDATA%\better-search\index.db.
@@ -275,6 +276,7 @@ func (b *Bulk) Commit() error {
 			FROM temp.keep_usage AS k
 			WHERE files.id = k.id AND files.name = k.name`,
 		`DROP TABLE temp.keep_usage`,
+		`DELETE FROM meta WHERE key = 'stale'`, // a fresh index has nothing missed
 		`INSERT INTO files_fts (files_fts) VALUES ('rebuild')`,
 		createTriggersSQL,
 	}

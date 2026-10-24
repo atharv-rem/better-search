@@ -2,12 +2,16 @@ import { useCallback, useEffect, useRef, useState, type ComponentType } from "re
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
+  ArrowClockwiseIcon,
+  DownloadSimpleIcon,
   FileTextIcon,
   GearSixIcon,
   GlobeIcon,
   HardDrivesIcon,
   InfoIcon,
+  KeyIcon,
   MagnifyingGlassIcon,
   XIcon,
   type IconProps,
@@ -15,6 +19,7 @@ import {
 import { saveSettings, useSettings, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { ActionButton, Group, Row } from "@/settings/controls";
+import { ApiKeysSection } from "@/settings/api-keys-section";
 import { GeneralSection } from "@/settings/general-section";
 import { IndexingSection } from "@/settings/indexing-section";
 import { SearchSection, WebSection } from "@/settings/search-section";
@@ -27,6 +32,7 @@ const SECTIONS: { id: string; name: string; icon: ComponentType<IconProps>; Cont
   { id: "indexing", name: "Indexing", icon: HardDrivesIcon, Content: IndexingSection },
   { id: "search", name: "Search", icon: MagnifyingGlassIcon, Content: SearchSection },
   { id: "web", name: "Web search", icon: GlobeIcon, Content: WebSection },
+  { id: "api-keys", name: "API keys", icon: KeyIcon, Content: ApiKeysSection },
   { id: "about", name: "About", icon: InfoIcon, Content: AboutSection },
 ];
 
@@ -139,18 +145,98 @@ export function SettingsWindow() {
   );
 }
 
+type UpdateState =
+  | { kind: "idle" }
+  | { kind: "unavailable" } // this build has no updater config
+  | { kind: "checking" }
+  | { kind: "latest" }
+  | { kind: "available"; update: Update }
+  | { kind: "downloading"; percent: number | null }
+  | { kind: "installing" }
+  | { kind: "error"; message: string };
+
 function AboutSection() {
   const [version, setVersion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [update, setUpdate] = useState<UpdateState>({ kind: "idle" });
   useEffect(() => {
     getVersion()
       .then(setVersion)
       .catch(() => {});
+    invoke<boolean>("can_update")
+      .then((can) => !can && setUpdate({ kind: "unavailable" }))
+      .catch(() => {});
   }, []);
+
+  const checkForUpdate = async () => {
+    setUpdate({ kind: "checking" });
+    try {
+      const found = await check();
+      setUpdate(found ? { kind: "available", update: found } : { kind: "latest" });
+    } catch (err) {
+      setUpdate({ kind: "error", message: `Couldn't check for updates: ${err}` });
+    }
+  };
+
+  // Windows closes the app to run the installer, which opens it again after.
+  const install = async (found: Update) => {
+    let total = 0;
+    let done = 0;
+    setUpdate({ kind: "downloading", percent: null });
+    try {
+      await found.downloadAndInstall((event) => {
+        if (event.event === "Started") total = event.data.contentLength ?? 0;
+        else if (event.event === "Progress") {
+          done += event.data.chunkLength;
+          setUpdate({ kind: "downloading", percent: total ? Math.min(100, Math.round((done / total) * 100)) : null });
+        } else setUpdate({ kind: "installing" });
+      });
+    } catch (err) {
+      setUpdate({ kind: "error", message: `Couldn't install the update: ${err}` });
+    }
+  };
+
+  const status = {
+    idle: null,
+    unavailable: "This build can't update itself.",
+    checking: "Checking for updates…",
+    latest: "You're on the latest version.",
+    available: update.kind === "available" ? `Version ${update.update.version} is available.` : null,
+    downloading:
+      update.kind === "downloading"
+        ? `Downloading the update${update.percent === null ? "…" : ` ${update.percent}%`}`
+        : null,
+    installing: "Installing. Better Search will restart.",
+    error: null,
+  }[update.kind];
+  const busy = update.kind === "checking" || update.kind === "downloading" || update.kind === "installing";
 
   return (
     <Group>
-      <Row label="Better Search" description={version ? `Version ${version}` : undefined} />
+      <Row
+        label="Better Search"
+        description={
+          <>
+            {version ? `Version ${version}` : "Version"}
+            {status && <span className="block text-zinc-400">{status}</span>}
+          </>
+        }
+        error={update.kind === "error" ? update.message : null}
+      >
+        {update.kind === "available" ? (
+          <ActionButton variant="primary" onClick={() => install(update.update)}>
+            <DownloadSimpleIcon size={14} />
+            Update to {update.update.version}
+          </ActionButton>
+        ) : (
+          update.kind !== "unavailable" && (
+            <ActionButton disabled={busy} onClick={checkForUpdate}>
+              <ArrowClockwiseIcon size={14} className={cn(update.kind === "checking" && "motion-safe:animate-spin")} />
+              {update.kind === "checking" ? "Checking…" : "Check for updates"}
+            </ActionButton>
+          )
+        )}
+      </Row>
       <Row label="Logs" description="What the app and the indexer wrote while running, for tracking down problems." error={error}>
         <ActionButton
           onClick={() =>

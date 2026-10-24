@@ -40,7 +40,10 @@ type Request struct {
 type Status struct {
 	Indexing  bool  `json:"indexing"`
 	IndexedAt int64 `json:"indexed_at"` // unix seconds, 0 = never
-	FileCount int64 `json:"file_count"`
+	FileCount  int64 `json:"file_count"`
+	CacheBytes int64 `json:"cache_bytes"` // SQLite page cache in memory, all connections
+	CacheLimit int64 `json:"cache_limit"` // the most each connection's page cache may hold
+	Stale      bool  `json:"stale"`       // the watcher missed changes; a full index would fix it
 }
 
 type Response struct {

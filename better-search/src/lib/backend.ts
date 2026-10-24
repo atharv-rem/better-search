@@ -19,6 +19,10 @@ export interface IndexStatus {
   indexing: boolean;
   indexed_at: number;
   file_count: number;
+  /** SQLite page cache in the backend's memory, across its connections. */
+  cache_bytes: number;
+  /** The most each connection's page cache may hold. */
+  cache_limit: number;
 }
 
 export interface IndexProgress {

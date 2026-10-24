@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,6 +18,7 @@ import (
 	"better-search/backend/internal/indexer"
 	"better-search/backend/internal/ipc"
 	"better-search/backend/internal/search"
+	"better-search/backend/internal/watcher"
 
 	"golang.org/x/sys/windows"
 )
@@ -25,8 +27,12 @@ func main() {
 	dbPath := flag.String("db", database.DefaultPath(), "path to the SQLite index")
 	settingsPath := flag.String("settings", "", "the app's settings.json, for the user's indexing exclusions")
 	indexOnly := flag.Bool("index-only", false, "build the index and exit (run elevated)")
+	watch := flag.Bool("watch", false, "keep the index up to date from filesystem changes until stopped")
 	flag.Parse()
 
+	if *watch {
+		os.Exit(watcher.Run(*dbPath, *settingsPath))
+	}
 	if *indexOnly {
 		os.Exit(indexer.RunChild(*dbPath, *settingsPath))
 	}
@@ -122,10 +128,16 @@ func main() {
 		case ipc.TypeStatus:
 			indexedAt, _ := db.IndexedAt()
 			count, _ := db.FileCount()
+			cacheUsed, err := db.CacheUsed(context.Background())
+			if err != nil {
+				log.Printf("Failed to read the page cache size: %v", err)
+			}
 			out.OK(req.ID, req.Type, nil, ipc.Status{
-				Indexing:  indexing.Load(),
-				IndexedAt: indexedAt,
-				FileCount: count,
+				Indexing:   indexing.Load(),
+				IndexedAt:  indexedAt,
+				FileCount:  count,
+				CacheBytes: cacheUsed,
+				CacheLimit: database.CacheLimit,
 			})
 
 		case ipc.TypeReindex:

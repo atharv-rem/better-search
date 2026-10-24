@@ -49,7 +49,7 @@ Better Search is split into two main layers:
 │   ┌──────────────────────────────────────┐   │
 │   │ File Indexer                         │   │
 │   │ Search Engine                        │   │
-│   │ Filesystem Watcher                   │   │
+│   │ Filesystem Watcher (own process)     │   │
 │   │ Database Layer                       │   │
 │   └──────────────────┬───────────────────┘   │
 │                      │                       │
@@ -149,7 +149,7 @@ Other searchable metadata
 
 The initial index can scan the configured filesystem locations.
 
-After the initial scan, filesystem changes can be detected using a filesystem watcher such as `fsnotify`.
+After the initial scan, a small background watcher (`better-search-backend -watch`, started with the app) keeps the index current. Windows pushes each change to it through `ReadDirectoryChangesW`, so nothing polls or rescans: it sleeps until a file changes, applies the change, and sleeps again. It skips the same excluded folders as the full index, and it needs no administrator rights.
 
 Conceptually:
 
@@ -173,6 +173,8 @@ Start filesystem watcher
 
 This allows the database to remain synchronized without repeatedly rebuilding the entire index.
 
+Limits: changes made while Better Search isn't running are not seen until the next full index, and if Windows drops events during a very large burst of changes the index is flagged as stale (`stale` in the status message) so it can be rebuilt.
+
 ## Technology Stack
 
 ### Desktop
@@ -185,7 +187,7 @@ This allows the database to remain synchronized without repeatedly rebuilding th
 
 * **Go**
 * Filesystem APIs
-* `fsnotify`
+* `ReadDirectoryChangesW` (filesystem change notifications)
 * SQLite
 
 ### Database

@@ -44,6 +44,8 @@ ORDER BY CASE
 // term is short, names must start with the first one: a substring scan of
 // every name takes ~0.5 s on a million files, a prefix lookup is instant.
 func (d *DB) SearchNames(query string, terms []string, limit int) ([]File, error) {
+	d.RefreshTree()
+
 	var long, short []string
 	for _, t := range terms {
 		if len([]rune(t)) >= 3 {
