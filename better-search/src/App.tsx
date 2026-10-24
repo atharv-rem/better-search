@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@/lib/phosphor";
@@ -19,8 +20,8 @@ import { SearchResults } from "@/components/search-results";
 import { WebResults } from "@/components/web-results";
 import { TypeFilter } from "@/components/type-filter";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
-import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
+import { panelShadow, shortcutPill } from "@/lib/surface-classes";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
 import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchUrl, type Settings } from "@/lib/settings";
 import { providerOf, webSearch, type WebResult } from "@/lib/web-search";
@@ -64,10 +65,6 @@ function searchWeb(web: Settings["web"], text: string, browser: string) {
   return invoke("open_url", { url: webSearchUrl(web, text), browser }).then(() => hideWindow());
 }
 
-// Kept within the frame's 24px padding: the window ends where the frame does,
-// so a wider shadow would be clipped.
-const panelShadow = "0 0 0 1px rgb(255 255 255 / 0.1), 0 4px 10px rgb(0 0 0 / 0.5), 0 10px 22px rgb(0 0 0 / 0.45)";
-
 /** The search-time and memory pills just above the bar: same padding, same
  *  height. */
 const statPill = "flex h-5 items-center gap-1 rounded-md bg-black px-2";
@@ -96,9 +93,10 @@ const SCREEN_MARGIN = 24;
 const RESULT_ROWS = 6;
 
 /** The results list's height limit: RESULT_ROWS rows, or fewer whole rows if
- *  the screen can't fit them, so the last one is never cut in half. */
-function resultsMaxHeight() {
-  const room = screen.availHeight - 2 * SCREEN_MARGIN - ABOVE_BAR - BAR_HEIGHT - BAR_TO_RESULTS;
+ *  the screen (`screenHeight`, see `useScreenHeight`) can't fit them, so the
+ *  last one is never cut in half. */
+function resultsMaxHeight(screenHeight: number) {
+  const room = screenHeight - 2 * SCREEN_MARGIN - ABOVE_BAR - BAR_HEIGHT - BAR_TO_RESULTS;
   const rows = Math.min(RESULT_ROWS, Math.floor((room - RESULTS_PADDING) / RESULT_ROW));
   return Math.max(3, rows) * RESULT_ROW + RESULTS_PADDING;
 }
@@ -107,9 +105,24 @@ function resultsMaxHeight() {
  *  fullest (pills, preview, bar, filters and a full results list) between
  *  the top of the screen and the taskbar. lib.rs `place_search` puts it
  *  there, so it stays put as results come and go. */
-function barScreenTop() {
-  const block = ABOVE_BAR + BAR_HEIGHT + BAR_TO_RESULTS + resultsMaxHeight();
-  return Math.max(SCREEN_MARGIN, (screen.availHeight - block) / 2) + ABOVE_BAR;
+function barScreenTop(screenHeight: number) {
+  const block = ABOVE_BAR + BAR_HEIGHT + BAR_TO_RESULTS + resultsMaxHeight(screenHeight);
+  return Math.max(SCREEN_MARGIN, (screenHeight - block) / 2) + ABOVE_BAR;
+}
+
+/** The height of the screen the window is on, without the taskbar, in the
+ *  page's CSS pixels. `screen.availHeight` would do but for the interface
+ *  size: WebView2 doesn't scale it by the zoom, so it's read from the monitor
+ *  and measured again with `measure` when the zoom or the monitor changes. */
+function useScreenHeight() {
+  const [height, setHeight] = useState(screen.availHeight);
+  const measure = useCallback(() => {
+    currentMonitor()
+      .then((m) => m && setHeight(m.workArea.size.height / window.devicePixelRatio))
+      .catch(() => {});
+  }, []);
+  useEffect(measure, [measure]);
+  return [height, measure] as const;
 }
 
 /** Physical pixels the preview's thumbnails are fitted within. Twice the
@@ -190,6 +203,10 @@ function App() {
   const browser = browsers.find((b) => b.id === savedBrowser) ?? DEFAULT_BROWSER;
   const searchRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const [screenHeight, measureScreen] = useScreenHeight();
+  const screenHeightRef = useRef(screenHeight);
+  screenHeightRef.current = screenHeight;
+  const fitRef = useRef<(recenter?: boolean) => void>(() => {});
   const searchSeq = useRef(0);
   const indexRef = useRef(index);
   indexRef.current = index;
@@ -233,9 +250,9 @@ function App() {
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame) return;
-    const observer = new ResizeObserver(() => {
-      // In physical pixels: Windows text scaling zooms the page, so CSS
-      // pixels aren't the window's logical pixels.
+    const fit = (recenter = false) => {
+      // In physical pixels: Windows text scaling and the interface size
+      // setting zoom the page, so CSS pixels aren't the window's logical ones.
       const { width, height, top } = frame.getBoundingClientRect();
       const barTop = (searchRef.current?.getBoundingClientRect().top ?? top) - top;
       const ratio = window.devicePixelRatio;
@@ -244,12 +261,42 @@ function App() {
         height: Math.ceil(height * ratio),
         // Rust keeps the bar in place, so the preview grows the window upwards.
         barTop: Math.round(barTop * ratio),
-        barScreenTop: Math.round(barScreenTop() * ratio),
+        barScreenTop: Math.round(barScreenTop(screenHeightRef.current) * ratio),
+        recenter,
       }).catch(() => {});
-    });
+    };
+    fitRef.current = fit;
+    const observer = new ResizeObserver(() => fit());
     observer.observe(frame);
-    return () => observer.disconnect();
-  }, []);
+    // A zoom leaves the page's CSS size as it was, so the observer misses it:
+    // watch the pixel ratio too, re-armed for each new ratio. The screen's
+    // height in CSS pixels changes with it, which recentres (below).
+    let ratioQuery: MediaQueryList | null = null;
+    const watchRatio = () => {
+      ratioQuery = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      ratioQuery.addEventListener("change", onRatio);
+    };
+    const onRatio = () => {
+      ratioQuery?.removeEventListener("change", onRatio);
+      watchRatio();
+      fit();
+      measureScreen();
+    };
+    watchRatio();
+    return () => {
+      observer.disconnect();
+      ratioQuery?.removeEventListener("change", onRatio);
+    };
+  }, [measureScreen]);
+
+  // The centred spot moves with the screen's height: put the bar there now.
+  useEffect(() => fitRef.current(true), [screenHeight]);
+
+  // The interface size setting, as the webview's zoom; the effect above refits.
+  const uiScale = settings.ui_scale;
+  useEffect(() => {
+    getCurrentWebview().setZoom(uiScale).catch(() => {});
+  }, [uiScale]);
 
   // Clicking another app closes the search, as nothing covers the screen
   // any more. Not while the UAC prompt (which takes focus) is open. Only
@@ -283,6 +330,8 @@ function App() {
 
     const unlistenShown = listen("search-shown", () => {
       focusSearch();
+      // Opened on the monitor the mouse is on, which may be another one.
+      measureScreen();
       // A hidden window comes back with the last query: select it so typing
       // starts a new search, or clear it if the settings say so.
       if (settingsRef.current.search.clear_on_close) setQuery("");
@@ -561,7 +610,9 @@ function App() {
               result={visible[Math.min(activeIndex ?? 0, visible.length - 1)]}
               size={PREVIEW_SIZE}
               thumbSize={previewThumbSize()}
-              style={{ boxShadow: panelShadow }}
+              // The pills' hairline, not the panel shadow: its drop would
+              // shade the gap below and make it look narrower than theirs.
+              style={{ boxShadow: statPillShadow }}
             />
           )}
           {/* ml-auto: stays right when there's no preview to its left. */}
@@ -591,7 +642,12 @@ function App() {
           className="gap-0! bg-black! p-[5px]! text-white"
           style={{ boxShadow: panelShadow }}
           textareaClassName="placeholder:text-zinc-400!"
-          onSubmit={submit}
+          leftSlot={
+            <span className="ml-1 flex h-4 items-center gap-0.5 rounded-[5px] bg-[#2a0b0b] px-1 text-[9px] leading-3 text-red-200/80 ring-1 ring-red-500/20">
+              <span className="font-semibold text-red-300">/</span>
+              to search the web
+            </span>
+          }
           rightSlot={
             <Button
               type="button"
@@ -704,7 +760,7 @@ function App() {
                     ) : webShown.kind === "error" ? (
                       <p role="alert" className="p-3 text-[12px] leading-4 text-zinc-400">
                         {webShown.message} <span className="text-zinc-500">
-                          <Shortcut keys={["Ctrl", "Enter"]} /> searches in your browser.
+                          <span className={shortcutPill}>Ctrl + Enter</span> searches in your browser.
                         </span>
                       </p>
                     ) : webResults.length ? (
@@ -713,7 +769,7 @@ function App() {
                         activeIndex={webActive}
                         onActiveIndexChange={setWebActive}
                         onOpen={openWebResult}
-                        maxHeight={resultsMaxHeight() - WEB_ROW_HEIGHT}
+                        maxHeight={resultsMaxHeight(screenHeight) - WEB_ROW_HEIGHT}
                       />
                     ) : (
                       <p className="p-3 text-[12px] leading-4 text-zinc-400">No results.</p>
@@ -728,7 +784,7 @@ function App() {
                 onActiveIndexChange={setActiveIndex}
                 // A click is like Enter, Ctrl+click like Ctrl+Enter.
                 onOpen={(r, ctrl) => openResult(r, ctrl !== enterReveals)}
-                maxHeight={resultsMaxHeight()}
+                maxHeight={resultsMaxHeight(screenHeight)}
               />
             ) : showRecentFiles ? (
               <RecentSearches

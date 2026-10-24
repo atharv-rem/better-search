@@ -61,3 +61,14 @@ export function surfaceHoverClasses(
   const shadow = Math.round(Math.max(1, Math.min(8, shadowLevel)));
   return `${SURFACE_HOVER_BG[bg]} ${SURFACE_HOVER_SHADOW[shadow]}`;
 }
+
+/** The search bar's and the settings window's shadow: a hairline ring and a
+ *  soft drop. Reaches 22px out, so it fits in the 24px (p-6) of transparent
+ *  window kept around those panels; a wider one would be clipped. */
+export const panelShadow =
+  "0 0 0 1px rgb(255 255 255 / 0.1), 0 4px 10px rgb(0 0 0 / 0.5), 0 10px 22px rgb(0 0 0 / 0.45)";
+
+/** A shortcut in a sentence, like "Ctrl + Enter", as one pill in the
+ *  settings shortcut button's look. */
+export const shortcutPill =
+  "mx-0.5 inline-flex h-5 items-center rounded-md bg-white/[0.07] px-1.5 align-middle text-[11px] leading-3 font-medium text-zinc-100";

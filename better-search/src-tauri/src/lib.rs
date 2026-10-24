@@ -260,9 +260,11 @@ fn place_search(window: &WebviewWindow) {
     let state = window.state::<BarLayout>();
     let bar = state.0.lock().unwrap();
     let bar_y = bar.screen_top.unwrap_or(area.height as i32 / 3);
+    // The page centres between the taskbar and the screen's other edge.
+    let work_top = monitor.work_area().position.y;
     let _ = window.set_position(tauri::PhysicalPosition::new(
         origin.x + (area.width as i32 - size.width as i32) / 2,
-        origin.y + bar_y - bar.top,
+        work_top + bar_y - bar.top,
     ));
 }
 
@@ -399,9 +401,43 @@ async fn open_settings(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     start_backend(&app);
-    build_panel(&app, SETTINGS_LABEL, "Better Search settings", 880.0, 560.0)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let scale = app.state::<SettingsState>().0.lock().unwrap().ui_scale;
+    let window = build_panel(
+        &app,
+        SETTINGS_LABEL,
+        "Better Search settings",
+        SETTINGS_SIZE.0 * scale,
+        SETTINGS_SIZE.1 * scale,
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = window.set_zoom(scale);
+    Ok(())
+}
+
+/// The settings window at 100%: 880x560 of page, plus the 24px each side its
+/// shadow is drawn in. Scaled by `Settings::ui_scale`, like its page.
+const SETTINGS_SIZE: (f64, f64) = (928.0, 608.0);
+
+/// Zooms the settings page to the interface size and resizes its window to
+/// match, keeping it centred where it was. The search window zooms itself.
+pub fn scale_settings_window(app: &AppHandle, scale: f64) {
+    let Some(window) = app.get_webview_window(SETTINGS_LABEL) else { return };
+    let _ = window.set_zoom(scale);
+    let Ok(factor) = window.scale_factor() else { return };
+    let width = (SETTINGS_SIZE.0 * scale * factor).round() as u32;
+    let height = (SETTINGS_SIZE.1 * scale * factor).round() as u32;
+    match (window.outer_position(), window.outer_size()) {
+        (Ok(pos), Ok(old)) => set_bounds(
+            &window,
+            pos.x + (old.width as i32 - width as i32) / 2,
+            pos.y + (old.height as i32 - height as i32) / 2,
+            width,
+            height,
+        ),
+        _ => {
+            let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+        }
+    }
 }
 
 /// The first-run screen: asks for administrator rights, builds the first
@@ -444,13 +480,21 @@ fn open_logs_folder(app: AppHandle) -> Result<(), String> {
 /// scaling zooms the webview. Keeps the window centred horizontally and the
 /// search bar where it is (`bar_top` is its offset in the window), so
 /// results grow downwards and the preview upwards. `bar_screen_top` is where
-/// `place_search` puts the bar the next time the search opens.
+/// `place_search` puts the bar the next time the search opens; `recenter`
+/// puts it there now, for a new zoom that changes the whole layout.
 #[tauri::command]
-fn resize_window(window: WebviewWindow, width: u32, height: u32, bar_top: i32, bar_screen_top: i32) {
+fn resize_window(window: WebviewWindow, width: u32, height: u32, bar_top: i32, bar_screen_top: i32, recenter: bool) {
     let state = window.state::<BarLayout>();
     let mut bar = state.0.lock().unwrap();
-    match (window.outer_position(), window.outer_size()) {
-        (Ok(pos), Ok(old)) => {
+    let monitor = window.current_monitor().ok().flatten().filter(|_| recenter);
+    match (window.outer_position(), window.outer_size(), monitor) {
+        (_, _, Some(monitor)) => {
+            let (area, origin) = (monitor.size(), monitor.position());
+            let x = origin.x + (area.width as i32 - width as i32) / 2;
+            let y = monitor.work_area().position.y + bar_screen_top - bar_top;
+            set_bounds(&window, x, y, width, height);
+        }
+        (Ok(pos), Ok(old), None) => {
             let x = pos.x + (old.width as i32 - width as i32) / 2;
             let y = pos.y + bar.top - bar_top;
             set_bounds(&window, x, y, width, height);

@@ -4,7 +4,7 @@ import { ArrowSquareOutIcon, GlobeIcon } from "@/lib/phosphor";
 import type { Settings } from "@/lib/settings";
 import { describeUsage, PROVIDERS, useApiKeys, useUsage, type KeyStatus, type Provider } from "@/lib/web-search";
 import { ActionButton, Group, Row, Select } from "@/settings/controls";
-import { Shortcut } from "@/components/ui/kbd";
+import { shortcutPill } from "@/lib/surface-classes";
 import { keepOpenFor } from "@/settings/keep-open";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
@@ -25,7 +25,7 @@ export function ApiKeysSection({ settings, save }: { settings: Settings; save: S
             ? "Add a key below to see web results right here instead of in your browser."
             : (
               <>
-                <Shortcut keys={["Enter"]} /> on a result opens it in your browser. <Shortcut keys={["Ctrl", "Enter"]} /> searches in the browser instead.
+                <span className={shortcutPill}>Enter</span> on a result opens it in your browser. <span className={shortcutPill}>Ctrl + Enter</span> searches in the browser instead.
               </>
             )
         }

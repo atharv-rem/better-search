@@ -18,6 +18,7 @@ import {
 } from "@/lib/phosphor";
 import { saveSettings, useSettings, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { panelShadow } from "@/lib/surface-classes";
 import { ActionButton, Group, Row } from "@/settings/controls";
 import { ApiKeysSection } from "@/settings/api-keys-section";
 import { GeneralSection } from "@/settings/general-section";
@@ -112,7 +113,13 @@ export function SettingsWindow() {
   }, []);
 
   return (
-    <div className="dark flex h-screen w-screen overflow-hidden rounded-[14px] bg-black text-white select-none">
+    // The padding is transparent window, room for the shadow (lib.rs sizes
+    // the window to match).
+    <div className="h-screen w-screen p-6">
+    <div
+      className="dark flex size-full overflow-hidden rounded-[14px] bg-black text-white select-none"
+      style={{ boxShadow: panelShadow }}
+    >
       <nav
         data-tauri-drag-region
         aria-label="Settings sections"
@@ -147,20 +154,22 @@ export function SettingsWindow() {
             <HomeSection />
           </div>
         ) : null}
-        <header data-tauri-drag-region className="relative z-10 h-10 shrink-0">
-        </header>
+        {/* Drag strip over the content's top padding, so it takes no room: the
+            gap above a page matches the 20px at its sides. */}
+        <header data-tauri-drag-region className="absolute inset-x-0 top-0 z-10 h-5" />
         {section.id !== "home" && (
-          <div className="flex-1 overflow-y-auto px-5 pb-5 select-text">
+          <div className="flex-1 overflow-y-auto p-5 select-text">
             {settings ? (
-              <div key={section.id} className="flex max-w-[560px] flex-col gap-4 motion-safe:animate-fade-in">
+              <div key={section.id} className="mx-auto flex max-w-[560px] flex-col gap-4 motion-safe:animate-fade-in">
                 <section.Content settings={settings} save={save} />
               </div>
             ) : (
-              <div className="h-40 animate-pulse rounded-xl bg-white/[0.04]" role="status" aria-label="Loading settings" />
+              <div className="mx-auto h-40 max-w-[560px] animate-pulse rounded-xl bg-white/[0.04]" role="status" aria-label="Loading settings" />
             )}
           </div>
         )}
       </main>
+    </div>
     </div>
   );
 }

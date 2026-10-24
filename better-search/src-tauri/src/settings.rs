@@ -18,6 +18,9 @@ pub struct Settings {
     pub search: SearchSettings,
     pub web: WebSettings,
     pub indexing: IndexingSettings,
+    /// The search window's zoom, on top of Windows' display scaling: 1.0 is
+    /// 100%. Changed in steps of `UI_SCALE_STEP`.
+    pub ui_scale: f64,
     /// The first-run screen (admin rights, then the first index) has been
     /// finished or skipped. A settings file from before it existed counts as
     /// done, so only a fresh install sees it.
@@ -70,6 +73,7 @@ pub struct IndexingSettings {
 }
 
 pub const DEFAULT_SHORTCUT: &str = "Alt+S";
+const UI_SCALE_STEP: f64 = 0.1;
 const ENGINES: [&str; 5] = ["google", "bing", "duckduckgo", "brave", "custom"];
 
 impl Default for Settings {
@@ -79,6 +83,7 @@ impl Default for Settings {
             search: SearchSettings::default(),
             web: WebSettings::default(),
             indexing: IndexingSettings::default(),
+            ui_scale: 1.0,
             onboarded: false,
         }
     }
@@ -132,6 +137,11 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     Shortcut::from_str(&s.shortcut).map_err(|e| format!("{} isn't a shortcut: {e}", s.shortcut))?;
 
     s.search.max_results = s.search.max_results.clamp(10, 500);
+    s.ui_scale = if s.ui_scale.is_finite() {
+        ((s.ui_scale / UI_SCALE_STEP).round() * UI_SCALE_STEP).clamp(0.7, 1.5)
+    } else {
+        1.0
+    };
 
     if !ENGINES.contains(&s.web.engine.as_str()) {
         s.web.engine = "google".into();
@@ -194,6 +204,9 @@ pub fn update_settings(app: AppHandle, state: State<'_, SettingsState>, settings
         }
     }
     save(&app, &settings)?;
+    if settings.ui_scale != current.ui_scale {
+        crate::scale_settings_window(&app, settings.ui_scale);
+    }
     // Turned off: forget the ones kept so far too.
     if !settings.search.remember_recent {
         if let Err(e) = crate::recent::clear(&app) {

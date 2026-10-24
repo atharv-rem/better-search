@@ -5,7 +5,7 @@ import { FileMagnifyingGlassIcon, FolderOpenIcon, LockSimpleIcon, ShieldCheckIco
 import { backend, BackendError, type IndexProgress } from "@/lib/backend";
 import { saveSettings, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
-import { Shortcut } from "@/components/ui/kbd";
+import { shortcutPill } from "@/lib/surface-classes";
 import "@/onboarding/onboarding.css";
 
 /** A drive from `list_drives` in settings.rs. */
@@ -260,7 +260,7 @@ function Success({ count }: { count: number }) {
         </p>
       </div>
       <p className="flex items-center gap-1 text-[13px] leading-5 text-zinc-300">
-        Press <Shortcut keys={["Alt", "S"]} /> anywhere to search.
+        Press <span className={shortcutPill}>Alt + S</span> anywhere to search.
       </p>
       <button type="button" onClick={finish} className={primary} autoFocus>
         Start searching

@@ -1,7 +1,5 @@
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, type CSSProperties, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
 import { fontWeights } from "@/lib/font-weight";
-import { ArrowUpIcon } from "@/lib/phosphor";
 import { useShape } from "@/lib/shape-context";
 import { surfaceClasses } from "@/lib/surface-classes";
 import { fieldTouchClass } from "@/lib/type-scale";
@@ -17,9 +15,9 @@ interface SearchBoxProps {
   onValueChange: (value: string) => void;
   placeholder?: string;
   maxRows?: number;
-  /** The arrow button, as Enter; `ctrl` for a Ctrl+click. */
-  onSubmit?: (ctrl: boolean) => void;
-  /** Buttons left of the arrow. */
+  /** Under the text, on the left: a hint. */
+  leftSlot?: ReactNode;
+  /** Under the text, on the right: buttons. */
   rightSlot?: ReactNode;
   className?: string;
   textareaClassName?: string;
@@ -27,7 +25,7 @@ interface SearchBoxProps {
 }
 
 export const SearchBox = forwardRef<HTMLDivElement, SearchBoxProps>(
-  ({ value, onValueChange, placeholder, maxRows = 4, onSubmit, rightSlot, className, textareaClassName, style }, ref) => {
+  ({ value, onValueChange, placeholder, maxRows = 4, leftSlot, rightSlot, className, textareaClassName, style }, ref) => {
     const shape = useShape();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const lineHeight = useRef(0);
@@ -93,20 +91,10 @@ export const SearchBox = forwardRef<HTMLDivElement, SearchBoxProps>(
           )}
           style={{ fontVariationSettings: fontWeights.normal }}
         />
-        <div className="flex items-center justify-end gap-1.5 [&_button]:h-6 [&_button]:text-[length:var(--fs-caption-compact,11px)] [&_button]:leading-[var(--lh-caption-compact,14px)] [&_button.w-7]:w-6">
-          {rightSlot}
-          <Button
-            type="button"
-            variant="primary"
-            size="icon-sm"
-            disabled={!value.trim()}
-            aria-label="Open"
-            // Keeps the caret in the box, so typing carries on after a click.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={(e) => onSubmit?.(e.ctrlKey)}
-          >
-            <ArrowUpIcon size={15} className="block h-[15px]! w-[15px]!" />
-          </Button>
+        <div className="flex items-center gap-1.5 [&_button]:h-6 [&_button]:text-[length:var(--fs-caption-compact,11px)] [&_button]:leading-[var(--lh-caption-compact,14px)] [&_button.w-7]:w-6">
+          {leftSlot}
+          {/* ml-auto: the buttons stay right with or without a hint. */}
+          <div className="ml-auto flex items-center gap-1.5">{rightSlot}</div>
         </div>
       </div>
     );

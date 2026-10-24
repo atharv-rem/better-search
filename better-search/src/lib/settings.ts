@@ -35,6 +35,9 @@ export interface Settings {
     /** Full paths, or folder names skipped wherever they are. */
     excluded_folders: string[];
   };
+  /** The search window's zoom, on top of Windows' display scaling: 1 is
+   *  100%. The shell keeps it within `UI_SCALE_MIN`..`UI_SCALE_MAX`. */
+  ui_scale: number;
   /** The first-run screen has been finished or skipped. */
   onboarded: boolean;
 }
@@ -45,9 +48,15 @@ export const DEFAULT_SETTINGS: Settings = {
   search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true },
   web: { engine: "google", custom_url: "", browser: "default", provider: "browser" },
   indexing: { excluded_drives: [], excluded_folders: [] },
+  ui_scale: 1,
   // Only a fallback for a failed read; the first-run screen is the shell's call.
   onboarded: true,
 };
+
+/** Matches `validate` in settings.rs. */
+export const UI_SCALE_MIN = 0.7;
+export const UI_SCALE_MAX = 1.5;
+export const UI_SCALE_STEP = 0.1;
 
 export const SEARCH_ENGINES = [
   { id: "google", name: "Google", url: "https://www.google.com/search?q=%s" },

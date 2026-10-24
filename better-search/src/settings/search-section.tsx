@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SEARCH_ENGINES, type Settings } from "@/lib/settings";
 import { BrowserIcon, useInstalledBrowsers } from "@/components/browser-icon";
-import { Shortcut } from "@/components/ui/kbd";
+import { shortcutPill } from "@/lib/surface-classes";
 import { ActionButton, Group, Row, Segmented, Select, Switch } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
@@ -33,7 +33,7 @@ export function SearchSection({ settings, save }: { settings: Settings; save: Sa
         </Row>
         <Row label="Enter" description={
             <>
-              What <Shortcut keys={["Enter"]} /> does to a result. <Shortcut keys={["Ctrl", "Enter"]} /> does the other.
+              What <span className={shortcutPill}>Enter</span> does to a result. <span className={shortcutPill}>Ctrl + Enter</span> does the other.
             </>
           }>
           <Segmented
