@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/atharv-rem/better-search/compare/v0.3.0...v0.3.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* implement handling for non-resident attribute lists and add tests ([b0f454b](https://github.com/atharv-rem/better-search/commit/b0f454b77d19756db1e00d0bd4ad88d76e588ef5))
+
 ## [0.3.0](https://github.com/atharv-rem/better-search/compare/v0.2.0...v0.3.0) (2026-10-25)
 
 
