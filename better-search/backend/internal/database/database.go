@@ -230,7 +230,8 @@ func (d *DB) BeginBulk() (*Bulk, error) {
 		return nil, err
 	}
 	steps := []string{
-		// The indexer process exits once this commits, so the cache goes with it.
+		// The helper closes this connection once it commits (Trim), and the
+		// cache goes with it.
 		fmt.Sprintf(`PRAGMA cache_size = -%d`, bulkCacheSize),
 		dropTriggersSQL,
 		// Carry usage stats over to the new index.

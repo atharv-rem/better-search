@@ -15,6 +15,6 @@ flowchart TB
   UI --> Shell
   UI <-->|"JSON lines · stdin/stdout"| Helper
   Helper -->|starts| Indexer
-  Helper -->|queries| DB
-  Indexer -->|builds| DB
+  Indexer -->|"file list · private pipe"| Helper
+  Helper -->|"queries, writes the index"| DB
   Watcher -->|keeps current| DB

@@ -1,5 +1,6 @@
-// The indexer (better-search-indexer.exe): builds the whole index from the
-// drives' file tables and exits. The search helper starts it as
+// The indexer (better-search-indexer.exe): reads the drives' file tables and
+// sends what it finds to the search helper that started it, over the pipe
+// named on its command line, then exits. The helper starts it as
 // administrator, which reading those tables needs.
 package main
 
@@ -7,13 +8,11 @@ import (
 	"flag"
 	"os"
 
-	"better-search/backend/internal/database"
 	"better-search/backend/internal/indexer"
 )
 
 func main() {
-	dbPath := flag.String("db", database.DefaultPath(), "path to the SQLite index")
-	settingsPath := flag.String("settings", "", "the app's settings.json, for the user's indexing exclusions")
+	pipe := flag.String("pipe", "", "the search helper's pipe to send the index to")
 	flag.Parse()
-	os.Exit(indexer.RunChild(*dbPath, *settingsPath))
+	os.Exit(indexer.RunChild(*pipe))
 }

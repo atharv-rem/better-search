@@ -187,8 +187,22 @@ type DriveStats struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
+// Store is where Run writes the index. The elevated indexer has no database
+// of its own: its Store sends everything to the search helper (elevated.go).
+type Store interface {
+	VolumeIndex(serial uint64) (int64, error)
+	BeginBulk() (Bulk, error)
+}
+
+// Bulk replaces the whole files table, like database.Bulk.
+type Bulk interface {
+	Add(f database.File) error
+	Commit() error
+	Abort()
+}
+
 type Indexer struct {
-	db         *database.DB
+	store      Store
 	excluded   map[string]bool
 	paths      *pathRule
 	onProgress func(Progress)
@@ -198,7 +212,8 @@ type Indexer struct {
 	drivePaths map[string]*pathRule // by drive, "" for every drive
 }
 
-func New(db *database.DB, excludedDirs, excludedPaths []string, onProgress func(Progress)) *Indexer {
+// New makes an indexer that writes to store, which only Run needs.
+func New(store Store, excludedDirs, excludedPaths []string, onProgress func(Progress)) *Indexer {
 	ex := make(map[string]bool, len(excludedDirs))
 	for _, d := range excludedDirs {
 		ex[strings.ToLower(d)] = true
@@ -206,7 +221,7 @@ func New(db *database.DB, excludedDirs, excludedPaths []string, onProgress func(
 	if onProgress == nil {
 		onProgress = func(Progress) {}
 	}
-	return &Indexer{db: db, excluded: ex, paths: compilePaths(excludedPaths), onProgress: onProgress}
+	return &Indexer{store: store, excluded: ex, paths: compilePaths(excludedPaths), onProgress: onProgress}
 }
 
 // Run indexes every fixed NTFS drive and replaces the whole files table.
@@ -243,7 +258,7 @@ func (ix *Indexer) Run() ([]DriveStats, error) {
 			log.Printf("Skipping %s: %v", d, err)
 			continue
 		}
-		idx, err := ix.db.VolumeIndex(v.serial)
+		idx, err := ix.store.VolumeIndex(v.serial)
 		if err != nil {
 			v.Close()
 			return nil, err
@@ -254,7 +269,7 @@ func (ix *Indexer) Run() ([]DriveStats, error) {
 		return nil, errors.New("no NTFS drives to index")
 	}
 
-	bulk, err := ix.db.BeginBulk()
+	bulk, err := ix.store.BeginBulk()
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +317,7 @@ const (
 
 // save works out which records belong in the index (reachable from the root
 // folder and not inside an excluded folder) and writes them out.
-func (ix *Indexer) save(bulk *database.Bulk, s *mftScan, drive string, volIndex int64) (int64, error) {
+func (ix *Indexer) save(bulk Bulk, s *mftScan, drive string, volIndex int64) (int64, error) {
 	entries := s.entries
 	state := make([]uint8, len(entries))
 	base := volIndex << 32

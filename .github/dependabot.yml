@@ -1,0 +1,16 @@
+# Opens a pull request when an action the workflows use has a new release.
+# The workflows pin each action to an exact commit, so nothing changes in a
+# build until one of these pull requests is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a few days after a release, so a bad one is usually caught and
+    # pulled before it's ever proposed.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

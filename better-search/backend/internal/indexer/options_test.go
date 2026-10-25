@@ -44,7 +44,7 @@ func TestApplyExcludesUserFolders(t *testing.T) {
 	s.set(23, 18, dir, "Secret") // D:\Work\Secret: other drive
 	s.set(24, 23, file, "kept-secret.txt")
 
-	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
+	ix := New(nil, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	ix.Apply(Options{
 		ExcludedDrives:  []string{"e:"},
 		ExcludedFolders: []string{`c:\archive\`, "build", `D:\Work\Secret`, `F:\`},

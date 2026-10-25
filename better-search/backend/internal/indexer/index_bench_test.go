@@ -45,7 +45,7 @@ func TestIndexBench(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
+	ix := New(nil, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	start = time.Now()
 	bulk, err := db.BeginBulk()
 	if err != nil {

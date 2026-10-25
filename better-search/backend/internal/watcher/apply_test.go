@@ -95,7 +95,7 @@ func TestAddRenameDelete(t *testing.T) {
 	}
 	defer db.Close()
 	seed(t, db, dir)
-	ix := indexer.New(db, nil, nil, nil)
+	ix := indexer.New(nil, nil, nil, nil)
 
 	// A new file shows up.
 	file := filepath.Join(dir, "report.txt")
@@ -154,7 +154,7 @@ func TestExcludedFoldersAreSkipped(t *testing.T) {
 	}
 	defer db.Close()
 	seed(t, db, dir)
-	ix := indexer.New(db, indexer.DefaultExcludedDirs, nil, nil)
+	ix := indexer.New(nil, indexer.DefaultExcludedDirs, nil, nil)
 
 	nm := filepath.Join(dir, "app", "node_modules", "pkg")
 	os.MkdirAll(nm, 0o755)
@@ -179,7 +179,7 @@ func TestCatchUpFindsChangesMadeWhileOff(t *testing.T) {
 	}
 	defer db.Close()
 	seed(t, db, dir)
-	ix := indexer.New(db, indexer.DefaultExcludedDirs, nil, nil)
+	ix := indexer.New(nil, indexer.DefaultExcludedDirs, nil, nil)
 
 	// The index as it was when the app last ran.
 	keep := filepath.Join(dir, "keep.txt")

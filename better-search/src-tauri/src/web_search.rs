@@ -67,9 +67,53 @@ fn client() -> &'static reqwest::Client {
         let _ = rustls::crypto::ring::default_provider().install_default();
         reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
+            // Nor through a redirect (see `is_local`).
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    attempt.error("too many redirects")
+                } else if is_local(attempt.url()) {
+                    attempt.stop()
+                } else {
+                    attempt.follow()
+                }
+            }))
             .build()
             .expect("HTTP client")
     })
+}
+
+/// Whether `url` points at this machine or the local network. Favicons are
+/// fetched from whatever addresses a provider's results name, which shouldn't
+/// be able to send requests to the user's router or local services. A public
+/// name that resolves to a local address still gets through.
+fn is_local(url: &reqwest::Url) -> bool {
+    use std::net::IpAddr;
+
+    let Some(host) = url.host_str() else { return true };
+    let host = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => is_local_v4(ip),
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (first & 0xfe00) == 0xfc00 // unique local
+                || (first & 0xffc0) == 0xfe80 // link-local
+                || ip.to_ipv4_mapped().is_some_and(is_local_v4)
+        }
+        // Single-label names ("router", "nas") are on the local network.
+        Err(_) => host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || !host.contains('.'),
+    }
+}
+
+fn is_local_v4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || (a == 100 && (64..128).contains(&b)) // carrier-grade NAT
 }
 
 /// For requests that carry an API key. It never follows a redirect: reqwest
@@ -195,7 +239,7 @@ async fn find_favicon(site: &reqwest::Url) -> Option<Vec<u8>> {
     }
     let href = icon_link(&String::from_utf8_lossy(&page))?;
     let icon = site.join(&href).ok()?;
-    if !matches!(icon.scheme(), "https" | "http") {
+    if !matches!(icon.scheme(), "https" | "http") || is_local(&icon) {
         return None;
     }
     image_bytes(icon.as_str()).await
@@ -212,7 +256,7 @@ pub async fn favicon(url: String) -> tauri::ipc::Response {
 
 async fn site_favicon(url: &str) -> Option<Vec<u8>> {
     let page = reqwest::Url::parse(url).ok()?;
-    if !matches!(page.scheme(), "https" | "http") {
+    if !matches!(page.scheme(), "https" | "http") || is_local(&page) {
         return None;
     }
     let site = reqwest::Url::parse(&page.origin().ascii_serialization()).ok()?;
@@ -582,6 +626,29 @@ mod tests {
         assert_eq!(icon_link(html).as_deref(), Some("/icon.svg"));
         assert_eq!(icon_link(r#"<link rel=icon href=/x.ico>"#).as_deref(), Some("/x.ico"));
         assert_eq!(icon_link(r#"<link rel="stylesheet" href="a.css">"#), None);
+    }
+
+    #[test]
+    fn local_addresses() {
+        let local = |url: &str| is_local(&reqwest::Url::parse(url).unwrap());
+        for url in [
+            "http://localhost:8080/",
+            "http://127.0.0.1/",
+            "http://192.168.1.1/",
+            "http://10.0.0.5/",
+            "http://169.254.169.254/",
+            "http://100.64.0.1/",
+            "http://[::1]/",
+            "http://[fd00::1]/",
+            "http://[::ffff:192.168.0.1]/",
+            "http://router/",
+            "http://nas.local/",
+        ] {
+            assert!(local(url), "{url}");
+        }
+        for url in ["https://example.com/", "https://8.8.8.8/", "https://[2606:4700::1111]/"] {
+            assert!(!local(url), "{url}");
+        }
     }
 
     #[test]

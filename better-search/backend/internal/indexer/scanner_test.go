@@ -191,7 +191,7 @@ func TestSaveSkipsExcludedAndOrphans(t *testing.T) {
 	s.set(22, 23, dir, "loopA")
 	s.set(23, 22, dir, "loopB")
 
-	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
+	ix := New(nil, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	b, err := db.BeginBulk()
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +258,7 @@ func TestSaveSkipsExcludedPaths(t *testing.T) {
 	s.set(44, 43, file, "snapshot.ts")
 	s.set(45, 42, file, "settings.json")
 
-	ix := New(db, DefaultExcludedDirs, DefaultExcludedPaths, nil)
+	ix := New(nil, DefaultExcludedDirs, DefaultExcludedPaths, nil)
 	b, err := db.BeginBulk()
 	if err != nil {
 		t.Fatal(err)

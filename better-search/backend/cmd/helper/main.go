@@ -20,8 +20,6 @@ import (
 	"better-search/backend/internal/ipc"
 	"better-search/backend/internal/memory"
 	"better-search/backend/internal/search"
-
-	"golang.org/x/sys/windows"
 )
 
 // The search helper (better-search-helper.exe): answers the app's searches
@@ -60,28 +58,6 @@ func main() {
 	}()
 
 	var indexing atomic.Bool
-
-	// follow reports an indexing process's progress until it finishes.
-	follow := func(proc windows.Handle) {
-		defer indexing.Store(false)
-		r := indexer.Watch(*dbPath, proc, func(p indexer.Progress) {
-			out.OK("", ipc.EventIndexProgress, nil, p)
-		})
-		if r.State != "done" {
-			log.Printf("Indexing failed: %s", r.Error)
-			out.Error("", ipc.EventIndexError, r.Error)
-			return
-		}
-		db.ClearCache()
-		out.OK("", ipc.EventIndexDone, nil, r.Stats)
-	}
-
-	// An indexer started by an earlier sidecar may still be running.
-	if indexer.IsRunning(*dbPath) {
-		log.Println("Indexing already in progress, following it...")
-		indexing.Store(true)
-		go follow(0)
-	}
 
 	log.Println("Waiting for queries on Stdin...")
 
@@ -149,21 +125,35 @@ func main() {
 				out.ErrorCode(req.ID, req.Type, ipc.CodeBusy, "indexing is already running")
 				continue
 			}
-			// LaunchElevated blocks until the user answers the UAC prompt,
-			// so keep reading requests meanwhile.
+			// Start blocks until the user answers the UAC prompt, so keep
+			// reading requests meanwhile.
 			go func(id string) {
-				proc, err := indexer.LaunchElevated(*dbPath, *settingsPath)
+				defer indexing.Store(false)
+				session, err := indexer.Start(*dbPath)
 				if err != nil {
-					indexing.Store(false)
 					code := ""
-					if errors.Is(err, indexer.ErrAdminDenied) {
+					switch {
+					case errors.Is(err, indexer.ErrAdminDenied):
 						code = ipc.CodeAdminDenied
+					case errors.Is(err, indexer.ErrBusy):
+						code = ipc.CodeBusy
 					}
 					out.ErrorCode(id, ipc.TypeReindex, code, err.Error())
 					return
 				}
 				out.OK(id, ipc.TypeReindex, nil, nil)
-				follow(proc)
+				stats, err := session.Serve(db, indexer.LoadOptions(*settingsPath), func(p indexer.Progress) {
+					out.OK("", ipc.EventIndexProgress, nil, p)
+				})
+				if err != nil {
+					log.Printf("Indexing failed: %v", err)
+					out.Error("", ipc.EventIndexError, err.Error())
+					return
+				}
+				// Closes the connection that wrote the index, and its big cache.
+				db.Trim()
+				memory.Trim()
+				out.OK("", ipc.EventIndexDone, nil, stats)
 			}(req.ID)
 
 		default:
