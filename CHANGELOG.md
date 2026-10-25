@@ -1,0 +1,16 @@
+# Changelog
+
+## [0.2.0](https://github.com/atharv-rem/better-search/compare/v0.1.0...v0.2.0) (2026-10-25)
+
+
+### Features
+
+* add backend implementation and configuration for Better Search ([d2689eb](https://github.com/atharv-rem/better-search/commit/d2689ebc9d6ea87fd32496d26de2d04cde77b8eb))
+* add indexing functionality and search results component ([5c82098](https://github.com/atharv-rem/better-search/commit/5c82098af870ca1284341fb59f2393e8dcdc85f6))
+* add keep-open functionality for settings window and implement server rack visualization ([e967a19](https://github.com/atharv-rem/better-search/commit/e967a1928b996a4bcec4b696ed7b7412dfb4ae3b))
+* add new Tauri plugins and capabilities for enhanced functionality ([ef4c252](https://github.com/atharv-rem/better-search/commit/ef4c252fac86993d5877095a819bfdb45079850f))
+* add settings management and preview functionality ([5183229](https://github.com/atharv-rem/better-search/commit/5183229b32cd61c568da21b611f92d4b75df48a9))
+* add utility libraries for font weights, icons, shapes, sizes, and surfaces ([f0dea1d](https://github.com/atharv-rem/better-search/commit/f0dea1de8e36a6ca31ab17c59e414d7f45453d38))
+* implement web search functionality with browser selection ([b9bcbaf](https://github.com/atharv-rem/better-search/commit/b9bcbafff0ed288dd527e12a38499a41707073be))
+* implement web search functionality with user API keys ([9863b66](https://github.com/atharv-rem/better-search/commit/9863b66a88eb6aa826a7dfff35f6b7b539822d8b))
+* initialize better-search application with Tauri and React ([45fa699](https://github.com/atharv-rem/better-search/commit/45fa699d57414b80bbb2180c5bf097266c30b1d8))
