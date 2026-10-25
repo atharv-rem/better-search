@@ -47,10 +47,15 @@ const SEARCH_DEBOUNCE_MS = 100;
  *  searches ("/ cats") under the web-search row while only "/" is typed. */
 const RECENT_SHOWN = 5;
 
-/** "/ cats" searches the web for "cats"; null for an ordinary file search. */
-function webQueryOf(query: string) {
-  return query.startsWith("/") ? query.slice(1).trim() : null;
+/** "/ cats" searches the web for "cats"; null for an ordinary file search.
+ *  `trigger` is the user's web search shortcut ("/" by default). */
+function webQueryOf(query: string, trigger: string) {
+  return query.startsWith(trigger) ? query.slice(trigger.length).trim() : null;
 }
+
+/** Recent web searches are kept as "/cats" whatever the shortcut is, so
+ *  changing it doesn't orphan them. */
+const RECENT_WEB_PREFIX = "/";
 
 /** Every icon in the web-search row and its browser menu, in pixels. */
 const ROW_ICON_SIZE = 16;
@@ -187,9 +192,12 @@ function App() {
   /** Keeps `text` as a recent search: called once something came of it. */
   const remember = useCallback((text: string) => {
     let t = text.trim();
+    const web = webQueryOf(t, settingsRef.current.web.trigger);
     // "/cats" and "/ cats" are the same web search.
-    if (t.startsWith("/")) t = `/${t.slice(1).trim()}`;
-    if (!t || t === "/" || !settingsRef.current.search.remember_recent) return;
+    if (web !== null) t = RECENT_WEB_PREFIX + web;
+    // Would read back as a web search.
+    else if (t.startsWith(RECENT_WEB_PREFIX)) return;
+    if (!t || t === RECENT_WEB_PREFIX || !settingsRef.current.search.remember_recent) return;
     setRecent((r) => [t, ...r.filter((q) => q !== t)]);
     invoke("add_recent_search", { query: t }).catch(() => {});
   }, []);
@@ -212,11 +220,12 @@ function App() {
   indexRef.current = index;
 
   const ready = index.kind === "ready";
-  const webQuery = webQueryOf(query);
+  const trigger = settings.web.trigger;
+  const webQuery = webQueryOf(query, trigger);
   const rememberRecent = settings.search.remember_recent;
-  const recentFiles = useMemo(() => recent.filter((q) => !q.startsWith("/")).slice(0, RECENT_SHOWN), [recent]);
-  const recentWeb = useMemo(() => recent.filter((q) => q.startsWith("/")).slice(0, RECENT_SHOWN), [recent]);
-  // Listed while only "/" is typed; ArrowDown moves into the list.
+  const recentFiles = useMemo(() => recent.filter((q) => !q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
+  const recentWeb = useMemo(() => recent.filter((q) => q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
+  // Listed while only the trigger is typed; ArrowDown moves into the list.
   const showRecentWeb = rememberRecent && webQuery === "" && recentWeb.length > 0;
   const [recentWebActive, setRecentWebActive] = useState<number | null>(null);
   useEffect(() => {
@@ -379,7 +388,7 @@ function App() {
   // newest request's answer is shown.
   useEffect(() => {
     const seq = ++searchSeq.current;
-    if (!ready || !query.trim() || webQueryOf(query) !== null) {
+    if (!ready || !query.trim() || webQueryOf(query, trigger) !== null) {
       setSearchMs(null);
       setResults([]);
       setActiveIndex(null);
@@ -398,7 +407,7 @@ function App() {
         .catch(() => {});
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, ready, shownAt, maxResults]);
+  }, [query, ready, shownAt, maxResults, trigger]);
 
   const openResult = useCallback(async (r: SearchResult, reveal: boolean) => {
     remember(queryRef.current);
@@ -452,10 +461,11 @@ function App() {
 
   /** Runs a recent web search again, as Enter on it would. */
   const runRecentWeb = (text: string) => {
-    const q = webQueryOf(text);
+    const q = text.slice(RECENT_WEB_PREFIX.length);
     if (!q) return;
-    setQuery(text);
-    remember(text);
+    const typed = trigger + q;
+    setQuery(typed);
+    remember(typed);
     if (provider) searchProvider(q);
     else searchWeb(settings.web, q, browser.id).catch((err) => console.error("Failed to open browser:", err));
   };
@@ -644,7 +654,7 @@ function App() {
           textareaClassName="placeholder:text-zinc-400!"
           leftSlot={
             <span className="ml-1 flex h-4 items-center gap-0.5 rounded-[5px] bg-[#2a0b0b] px-1 text-[9px] leading-3 text-red-200/80 ring-1 ring-red-500/20">
-              <span className="font-semibold text-red-300">/</span>
+              <span className="font-semibold text-red-300">{trigger}</span>
               to search the web
             </span>
           }

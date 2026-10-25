@@ -131,11 +131,25 @@ export function ServerRack({ top, bottom, indexing }: { top: RackUnit[]; bottom:
     setLocated(i);
     locateTimer.current = setTimeout(() => setLocated(null), 3000);
   };
+  // The lights and fans only run while the window is visible and focused.
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    const sync = () => setPaused(document.hidden || !document.hasFocus());
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener("blur", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("blur", sync);
+    };
+  }, []);
   const anyLit = slots.some((u) => u && (u.lamp === "on" || u.lamp === "busy"));
   const label = `A server rack holding the index: ${top.map((u) => u.title).join(", ")}.`;
 
   return (
-    <div className="rack" data-indexing={indexing ? "" : undefined}>
+    <div className="rack" data-indexing={indexing ? "" : undefined} data-paused={paused ? "" : undefined}>
       <svg
         className="rk-svg"
         viewBox={`0 0 ${WIDTH} ${g.viewHeight}`}
@@ -156,18 +170,15 @@ export function ServerRack({ top, bottom, indexing }: { top: RackUnit[]; bottom:
             <stop offset="0" stopColor="#71717a" stopOpacity="0.35" />
             <stop offset="1" stopColor="#a1a1aa" />
           </linearGradient>
-          <filter id="rk-pool" filterUnits="userSpaceOnUse" x="-60" y="-60" width={WIDTH + 120} height={g.viewHeight + 120}>
-            <feGaussianBlur stdDeviation="9" />
-          </filter>
         </defs>
 
         {/* The light pools on the floor, the shape of the plinth it stands on. */}
         {anyLit && (
-          <path
-            className="rk-halo"
-            d={poly([cam.P(-4, -4, 0), cam.P(W + 4, -4, 0), cam.P(W + 4, D + 4, 0), cam.P(-4, D + 4, 0)])}
-            filter="url(#rk-pool)"
-          />
+          <g className="rk-halo">
+            {[12, 8, 4].map((m) => (
+              <path key={m} d={poly([cam.P(-m, -m, 0), cam.P(W + m, -m, 0), cam.P(W + m, D + m, 0), cam.P(-m, D + m, 0)])} />
+            ))}
+          </g>
         )}
 
         <Box paths={boxPaths(cam, -2, -2, 0, W + 4, D + 4, BASE)} className="rk-plinth" />
@@ -270,10 +281,16 @@ function Face({ unit, index }: { unit: RackUnit; index: number }) {
   return (
     <>
       <rect className="rk-recess" x={1.5} y={1.4} width={UNIT_W - 3} height={UNIT_H - 2.8} rx={1.2} />
-      {unit.lit && <path className="rk-hot-line" d={`M3 0.7H${UNIT_W - 3}`} filter="url(#rk-glow)" />}
+      {unit.lit && (
+        <>
+          <path className="rk-hot-line rk-hot-line-glow" d={`M3 0.7H${UNIT_W - 3}`} />
+          <path className="rk-hot-line" d={`M3 0.7H${UNIT_W - 3}`} />
+        </>
+      )}
 
-      {/* Power lamp: steady while it runs. */}
-      <circle className={live ? "rk-lamp rk-hot" : "rk-lamp"} cx={6} cy={MID} r={1.1} filter={live ? "url(#rk-glow)" : undefined} />
+      {/* Power lamp: steady while it runs. The glow is a plain soft disc, not a blur filter, so it stays cheap to animate. */}
+      {live && <circle className="rk-lamp-glow" cx={6} cy={MID} r={2.8} />}
+      <circle className={live ? "rk-lamp rk-hot" : "rk-lamp"} cx={6} cy={MID} r={1.1} />
 
       {/* Drive bays, each with its own activity light. */}
       {Array.from({ length: BAYS }, (_, k) => {

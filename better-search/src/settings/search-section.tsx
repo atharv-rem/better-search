@@ -130,7 +130,7 @@ export function WebSection({ settings, save }: { settings: Settings; save: Save 
     <Group
       footer={
         <>
-          Start a search with <span className="text-zinc-300">/</span> to search the web. Tab switches the browser.
+          Start a search with <span className="text-zinc-300">{web.trigger}</span> to search the web. Tab switches the browser.
         </>
       }
     >

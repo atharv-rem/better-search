@@ -59,6 +59,8 @@ pub struct WebSettings {
     /// `web_search::PROVIDERS` shows its results in the search window, with
     /// the user's key for it.
     pub provider: String,
+    /// What a search starts with to search the web instead of files, like "/".
+    pub trigger: String,
 }
 
 /// Read by the backend's indexer (indexer/options.go); they apply the next
@@ -73,6 +75,7 @@ pub struct IndexingSettings {
 }
 
 pub const DEFAULT_SHORTCUT: &str = "Alt+S";
+const DEFAULT_WEB_TRIGGER: &str = "/";
 const UI_SCALE_STEP: f64 = 0.1;
 const ENGINES: [&str; 5] = ["google", "bing", "duckduckgo", "brave", "custom"];
 
@@ -97,7 +100,7 @@ impl Default for SearchSettings {
 
 impl Default for WebSettings {
     fn default() -> Self {
-        Self { engine: "google".into(), custom_url: String::new(), browser: "default".into(), provider: "browser".into() }
+        Self { engine: "google".into(), custom_url: String::new(), browser: "default".into(), provider: "browser".into(), trigger: DEFAULT_WEB_TRIGGER.into() }
     }
 }
 
@@ -152,6 +155,13 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     }
     if !crate::web_search::PROVIDERS.contains(&s.web.provider.as_str()) {
         s.web.provider = "browser".into();
+    }
+
+    // Symbols only, so it can't swallow ordinary file searches.
+    s.web.trigger = s.web.trigger.trim().to_string();
+    let n = s.web.trigger.chars().count();
+    if !(1..=2).contains(&n) || !s.web.trigger.chars().all(|c| c.is_ascii_punctuation()) {
+        return Err("The web search shortcut has to be one or two symbols, like / or ?".into());
     }
 
     let mut folders: Vec<String> = Vec::new();

@@ -45,6 +45,10 @@ Better Search is a [Tauri](https://tauri.app) app: a Rust shell with a React int
   <img alt="Index lifecycle: first run, every start, while running" src="docs/diagrams/indexing-light.svg">
 </picture>
 
+## Privacy
+
+Everything stays on your computer except web search, which only runs once you add your own API key. See the [privacy policy](PRIVACY.md).
+
 ## Performance
 
 Measured on a release build with an index of 213,000 files:

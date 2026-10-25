@@ -59,9 +59,20 @@
   stroke: var(--ink);
 }
 
-.rk-halo {
+/* Stacked discs of the plinth's shape stand in for a blurred pool of light. */
+.rk-halo path {
+  fill: var(--accent);
+  opacity: 0.1;
+}
+
+.rk-lamp-glow {
   fill: var(--accent);
   opacity: 0.3;
+}
+
+.rk-hot-line-glow {
+  stroke-width: 4;
+  opacity: 0.25;
 }
 
 .rack[data-indexing] .rk-halo {
@@ -90,6 +101,15 @@
 
 .rack[data-indexing] .rk-hot-line {
   animation: rk-breathe-line 1.2s ease-in-out infinite;
+}
+
+.rack[data-indexing] .rk-hot-line-glow {
+  animation-name: rk-breathe-glow;
+}
+
+/* Window hidden or unfocused: freeze every animation so nothing repaints. */
+.rack[data-paused] * {
+  animation-play-state: paused !important;
 }
 
 /* The machines */
@@ -290,6 +310,7 @@
 
 /* Locate: the unit's lamps blink together, like the identify light on a real server. */
 .rk-unit[data-locate] .rk-lamp,
+.rk-unit[data-locate] .rk-lamp-glow,
 .rk-unit[data-locate] .rk-act {
   fill: var(--accent);
   animation: rk-locate 0.6s steps(1, end) infinite;
@@ -388,14 +409,22 @@
   }
 }
 
+@keyframes rk-breathe-glow {
+  50% {
+    opacity: 0.1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rk-fan,
   .rk-act[data-on],
   .rk-unit[data-locate] .rk-lamp,
   .rk-unit[data-locate] .rk-act,
   .rk-note[data-locate] .rk-spot,
+  .rk-unit[data-locate] .rk-lamp-glow,
   .rack[data-indexing] .rk-halo,
-  .rack[data-indexing] .rk-hot-line {
+  .rack[data-indexing] .rk-hot-line,
+  .rack[data-indexing] .rk-hot-line-glow {
     animation: none;
   }
 }

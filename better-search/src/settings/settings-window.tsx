@@ -14,6 +14,7 @@ import {
   InfoIcon,
   KeyIcon,
   MagnifyingGlassIcon,
+  TerminalIcon,
   type IconProps,
 } from "@/lib/phosphor";
 import { saveSettings, useSettings, type Settings } from "@/lib/settings";
@@ -26,6 +27,7 @@ import { HomeSection } from "@/settings/home-section";
 import { isHeldOpen, keepOpenFor } from "@/settings/keep-open";
 import { IndexingSection } from "@/settings/indexing-section";
 import { SearchSection, WebSection } from "@/settings/search-section";
+import { ShortcutsSection } from "@/settings/shortcuts-section";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 type SectionProps = { settings: Settings; save: Save };
@@ -36,6 +38,7 @@ const SECTIONS: { id: string; name: string; icon: ComponentType<IconProps>; Cont
   { id: "indexing", name: "Indexing", icon: HardDrivesIcon, Content: IndexingSection },
   { id: "search", name: "Search", icon: MagnifyingGlassIcon, Content: SearchSection },
   { id: "web", name: "Web search", icon: GlobeIcon, Content: WebSection },
+  { id: "shortcuts", name: "Shortcuts", icon: TerminalIcon, Content: ShortcutsSection },
   { id: "api-keys", name: "API keys", icon: KeyIcon, Content: ApiKeysSection },
   { id: "about", name: "About", icon: InfoIcon, Content: AboutSection },
 ];

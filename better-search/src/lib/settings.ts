@@ -28,6 +28,8 @@ export interface Settings {
     /** "browser" opens web searches in the browser; a provider shows its
      *  results in the search window, with the user's key for it. */
     provider: ProviderId | "browser";
+    /** What a search starts with to search the web, like "/". */
+    trigger: string;
   };
   /** Applied the next time the index is rebuilt. */
   indexing: {
@@ -42,11 +44,13 @@ export interface Settings {
   onboarded: boolean;
 }
 
+export const DEFAULT_WEB_TRIGGER = "/";
+
 /** Until the saved ones arrive. Matches `Settings::default` in settings.rs. */
 export const DEFAULT_SETTINGS: Settings = {
   shortcut: "Alt+S",
   search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true },
-  web: { engine: "google", custom_url: "", browser: "default", provider: "browser" },
+  web: { engine: "google", custom_url: "", browser: "default", provider: "browser", trigger: DEFAULT_WEB_TRIGGER },
   indexing: { excluded_drives: [], excluded_folders: [] },
   ui_scale: 1,
   // Only a fallback for a failed read; the first-run screen is the shell's call.
