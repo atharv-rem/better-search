@@ -1,0 +1,52 @@
+# Checks that the Go programs, the interface and the Rust app all still build,
+# so a broken change shows up on its pull request instead of in a release.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: better-search/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: better-search/backend/go.mod
+          cache-dependency-path: better-search/backend/go.sum
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: better-search/src-tauri -> target
+
+      # unsafeptr off: cache.go reads libc heap memory, which vet can't tell apart.
+      - name: Vet Go programs
+        working-directory: better-search/backend
+        run: go vet -unsafeptr=false ./...
+
+      - name: Build Go programs
+        shell: pwsh
+        run: ./better-search/backend/scripts/build-backend.ps1
+
+      - name: Install npm packages
+        working-directory: better-search
+        run: npm ci
+
+      - name: Build interface
+        working-directory: better-search
+        run: npm run build
+
+      - name: Check Rust app
+        working-directory: better-search/src-tauri
+        run: cargo check --locked

@@ -1,6 +1,10 @@
 {
+  "plugins": {
+    "updater": null
+  },
   "bundle": {
     "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
     "windows": {
       "webviewInstallMode": {
         "type": "offlineInstaller"

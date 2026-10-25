@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "better-search",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "extra-files": [
+        { "type": "json", "path": "better-search/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "better-search/package-lock.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "better-search/package-lock.json", "jsonpath": "$.packages[''].version" },
+        { "type": "json", "path": "better-search/src-tauri/tauri.conf.json", "jsonpath": "$.version" },
+        { "type": "toml", "path": "better-search/src-tauri/Cargo.toml", "jsonpath": "$.package.version" },
+        { "type": "toml", "path": "better-search/src-tauri/Cargo.lock", "jsonpath": "$.package[?(@.name.value=='better-search')].version" }
+      ]
+    }
+  }
+}
