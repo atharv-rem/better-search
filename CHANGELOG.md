@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/atharv-rem/better-search/compare/v0.2.0...v0.3.0) (2026-10-25)
+
+
+### Features
+
+* **diagrams:** update architecture diagrams and flowchart ([1e61233](https://github.com/atharv-rem/better-search/commit/1e612331645fd007b7f919a7f32d694db66910bd))
+
 ## [0.2.0](https://github.com/atharv-rem/better-search/compare/v0.1.0...v0.2.0) (2026-10-25)
 
 
