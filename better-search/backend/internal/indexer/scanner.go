@@ -223,21 +223,11 @@ func (v *volume) mftRuns() ([]run, error) {
 				}
 				frags = append(frags, fragment{int64(le.Uint64(a[16:])), runs})
 			case typ == attrAttributeList && isBase:
-				if a[8] != 0 {
-					return errors.New("non-resident $MFT attribute list is not supported")
+				list, err := v.attributeList(a)
+				if err != nil {
+					return err
 				}
-				list := residentValue(a)
-				for off := 0; off+26 <= len(list); {
-					elen := int(le.Uint16(list[off+4:]))
-					if elen == 0 {
-						break
-					}
-					ref := int64(le.Uint64(list[off+16:]) & refMask)
-					if le.Uint32(list[off:]) == attrData && list[off+6] == 0 && ref != 0 {
-						extraRecords = append(extraRecords, ref)
-					}
-					off += elen
-				}
+				extraRecords = append(extraRecords, dataRecords(list)...)
 			}
 			return nil
 		})
@@ -280,6 +270,67 @@ func (v *volume) mftRuns() ([]run, error) {
 		return nil, fmt.Errorf("%s: $MFT has no data runs", v.drive)
 	}
 	return runs, nil
+}
+
+// maxAttributeList is more than any real attribute list (NTFS caps them at
+// 256 KiB), so a damaged size can't make us read gigabytes.
+const maxAttributeList = 1 << 20
+
+// attributeList is the value of an $ATTRIBUTE_LIST attribute. A long one
+// (a very fragmented $MFT) doesn't fit in the record and is stored in
+// clusters of its own, like a file's data.
+func (v *volume) attributeList(a []byte) ([]byte, error) {
+	if a[8] == 0 {
+		return residentValue(a), nil
+	}
+	runOff := int(le.Uint16(a[32:]))
+	size := int64(le.Uint64(a[48:]))
+	if runOff >= len(a) || size < 0 || size > maxAttributeList {
+		return nil, errors.New("corrupt $MFT attribute list")
+	}
+	runs, err := parseRuns(a[runOff:])
+	if err != nil {
+		return nil, err
+	}
+	list := make([]byte, 0, size)
+	for _, r := range runs {
+		if int64(len(list)) >= size {
+			break
+		}
+		if r.lcn < 0 {
+			return nil, errors.New("corrupt $MFT attribute list")
+		}
+		// Whole clusters, as volume reads must be sector-aligned.
+		need := size - int64(len(list))
+		n := min(r.clusters, (need+v.bytesPerCluster-1)/v.bytesPerCluster) * v.bytesPerCluster
+		buf := make([]byte, n)
+		if _, err := v.file.ReadAt(buf, r.lcn*v.bytesPerCluster); err != nil {
+			return nil, fmt.Errorf("read $MFT attribute list: %w", err)
+		}
+		list = append(list, buf...)
+	}
+	if int64(len(list)) < size {
+		return nil, errors.New("corrupt $MFT attribute list")
+	}
+	return list[:size], nil
+}
+
+// dataRecords are the records an attribute list says hold pieces of the
+// unnamed $DATA attribute.
+func dataRecords(list []byte) []int64 {
+	var recs []int64
+	for off := 0; off+26 <= len(list); {
+		elen := int(le.Uint16(list[off+4:]))
+		if elen == 0 {
+			break
+		}
+		ref := int64(le.Uint64(list[off+16:]) & refMask)
+		if le.Uint32(list[off:]) == attrData && list[off+6] == 0 && ref != 0 {
+			recs = append(recs, ref)
+		}
+		off += elen
+	}
+	return recs
 }
 
 func recordOffset(runs []run, recNo, recordSize, bytesPerCluster int64) (int64, bool) {

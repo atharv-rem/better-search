@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 	"unicode/utf16"
@@ -282,5 +283,55 @@ func TestSaveSkipsExcludedPaths(t *testing.T) {
 		if (len(got) > 0) != want {
 			t.Errorf("%s indexed = %v, want %v", name, len(got) > 0, want)
 		}
+	}
+}
+
+// A very fragmented $MFT's attribute list is stored outside its record, here
+// in two pieces: cluster 3, then cluster 7.
+func TestNonResidentAttributeList(t *testing.T) {
+	const cluster = 512
+	list := make([]byte, 20*32) // 640 bytes: more than one cluster
+	for i := range 20 {
+		e := list[i*32:]
+		binary.LittleEndian.PutUint32(e[0:], attrFileName)
+		binary.LittleEndian.PutUint16(e[4:], 32)
+	}
+	for i, ref := range map[int]uint64{0: 0, 17: 1234, 19: 5678} { // 0: record 0 itself
+		binary.LittleEndian.PutUint32(list[i*32:], attrData)
+		binary.LittleEndian.PutUint64(list[i*32+16:], ref|7<<48) // sequence number in the top bits
+	}
+
+	disk := make([]byte, 10*cluster)
+	copy(disk[3*cluster:], list[:cluster])
+	copy(disk[7*cluster:], list[cluster:])
+	path := filepath.Join(t.TempDir(), "volume")
+	if err := os.WriteFile(path, disk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	v := &volume{file: f, bytesPerCluster: cluster}
+
+	a := make([]byte, 72)
+	a[8] = 1                                                 // non-resident
+	binary.LittleEndian.PutUint16(a[32:], 64)                // runs start here
+	binary.LittleEndian.PutUint64(a[48:], uint64(len(list))) // real size
+	copy(a[64:], []byte{0x11, 1, 3, 0x11, 1, 4, 0})          // 1 cluster at 3, 1 cluster at 3+4
+
+	got, err := v.attributeList(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs := dataRecords(got)
+	if len(recs) != 2 || recs[0] != 1234 || recs[1] != 5678 {
+		t.Fatalf("data records %v, want [1234 5678]", recs)
+	}
+
+	binary.LittleEndian.PutUint64(a[48:], maxAttributeList+1)
+	if _, err := v.attributeList(a); err == nil {
+		t.Fatal("read an attribute list with an impossible size")
 	}
 }
