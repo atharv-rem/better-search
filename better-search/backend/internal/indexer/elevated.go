@@ -216,7 +216,9 @@ func serve(db *database.DB, f *os.File, opts Options, onProgress func(Progress))
 			}
 			var e error
 			bulk, e = db.BeginBulk()
-			err = answer(0, e)
+			if err = answer(0, e); e != nil {
+				return nil, e // keeps the error's kind (a full disk) for the app
+			}
 		case len(m.Files) > 0:
 			if bulk == nil {
 				return nil, errors.New("indexer sent files before starting")
@@ -232,7 +234,9 @@ func serve(db *database.DB, f *os.File, opts Options, onProgress func(Progress))
 			}
 			e := bulk.Commit() // rolls back if it fails
 			bulk = nil
-			err = answer(0, e)
+			if err = answer(0, e); e != nil {
+				return nil, e
+			}
 		case m.Done:
 			return m.Stats, nil
 		case m.Error != "":

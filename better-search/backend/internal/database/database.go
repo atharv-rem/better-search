@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // v2: files_name_nocase index for short-query prefix search.

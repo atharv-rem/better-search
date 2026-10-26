@@ -26,6 +26,10 @@ pub struct Settings {
     /// done, so only a fresh install sees it.
     #[serde(default = "done")]
     pub onboarded: bool,
+    /// The folder the search index is in when the user moved it to another
+    /// drive; empty for the default place (storage.rs). Changed only by
+    /// `storage::move_index`, which moves the files too.
+    pub index_folder: String,
 }
 
 fn done() -> bool {
@@ -88,6 +92,7 @@ impl Default for Settings {
             indexing: IndexingSettings::default(),
             ui_scale: 1.0,
             onboarded: false,
+            index_folder: String::new(),
         }
     }
 }
@@ -124,7 +129,7 @@ pub fn load(app: &AppHandle) -> Settings {
 }
 
 /// Writes to a temporary file first, so the indexer never reads half a file.
-fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let path = path(app).ok_or("no config folder")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -204,8 +209,10 @@ pub fn get_settings(state: State<'_, SettingsState>) -> Settings {
 /// and the old one stays.
 #[tauri::command]
 pub fn update_settings(app: AppHandle, state: State<'_, SettingsState>, settings: Settings) -> Result<Settings, String> {
-    let settings = validate(settings)?;
+    let mut settings = validate(settings)?;
     let mut current = state.0.lock().unwrap();
+    // Only moving the files changes where they are.
+    settings.index_folder = current.index_folder.clone();
     if !settings.shortcut.eq_ignore_ascii_case(&current.shortcut) {
         let _ = app.global_shortcut().unregister_all();
         if let Err(e) = register_shortcut(&app, &settings.shortcut) {
@@ -244,7 +251,7 @@ pub fn pause_shortcut(app: AppHandle, state: State<'_, SettingsState>, paused: b
 #[derive(Serialize)]
 pub struct Drive {
     /// "C:"
-    letter: String,
+    pub letter: String,
     label: String,
     /// The indexer reads NTFS drives only.
     ntfs: bool,
@@ -292,22 +299,4 @@ pub fn list_drives() -> Vec<Drive> {
 #[tauri::command]
 pub fn list_drives() -> Vec<Drive> {
     Vec::new()
-}
-
-/// What the app keeps on disk, in its local data folder.
-#[derive(Serialize)]
-pub struct StorageUsage {
-    /// The backend's SQLite index (database.DefaultPath), with its WAL files.
-    index_bytes: u64,
-}
-
-#[tauri::command]
-pub fn storage_usage(app: AppHandle) -> Result<StorageUsage, String> {
-    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let index_bytes = ["index.db", "index.db-wal", "index.db-shm"]
-        .iter()
-        .filter_map(|f| std::fs::metadata(dir.join(f)).ok())
-        .map(|m| m.len())
-        .sum();
-    Ok(StorageUsage { index_bytes })
 }

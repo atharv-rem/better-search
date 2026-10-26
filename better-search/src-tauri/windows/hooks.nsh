@@ -23,7 +23,25 @@
   nsExec::Exec 'taskkill /F /IM better-search-indexer.exe'
 !macroend
 
+; The search index goes in the user's local app data folder (on C:), and the
+; install can fit there when the index won't. The app offers to keep it on
+; another drive when it starts, but say so up front. Not when the index was
+; already moved (storage.rs records where), and not for silent updates.
+!macro WarnIfLowSpace
+  ReadRegStr $R2 HKCU "Software\better-search" "IndexFolder"
+  ${If} $R2 == ""
+    ${GetRoot} "$LOCALAPPDATA" $R0
+    ${DriveSpace} "$R0\" "/D=F /S=M" $R1
+    ; database.MinFreeSpace
+    ${If} $R1 < 300
+      MessageBox MB_YESNO|MB_ICONEXCLAMATION "Drive $R0 has only $R1 MB free.$\r$\n$\r$\nBetter Search needs about 300 MB for its search index. If another drive has more space, Better Search will offer to keep the index there when it starts. If not, free up some space on $R0 first.$\r$\n$\r$\nContinue installing?" /SD IDYES IDYES +2
+      Quit
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
+  !insertmacro WarnIfLowSpace
   !insertmacro StopBetterSearchPrograms
 !macroend
 
@@ -47,6 +65,17 @@
       nsExec::Exec 'cmdkey /delete:better-search/firecrawl'
       nsExec::Exec 'cmdkey /delete:better-search/tinyfish'
       nsExec::Exec 'cmdkey /delete:better-search/context'
+
+      ; A search index moved to another drive (storage.rs). Only its own
+      ; files, and the folder if that leaves it empty.
+      ReadRegStr $R0 HKCU "Software\better-search" "IndexFolder"
+      ${If} $R0 != ""
+        Delete "$R0\index.db"
+        Delete "$R0\index.db-wal"
+        Delete "$R0\index.db-shm"
+        RMDir "$R0"
+      ${EndIf}
+      DeleteRegKey HKCU "Software\better-search"
     ${EndIf}
   ${EndIf}
 !macroend

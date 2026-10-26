@@ -11,6 +11,7 @@ use tauri_plugin_shell::{
 mod docx;
 mod recent;
 mod settings;
+mod storage;
 mod web_search;
 use settings::SettingsState;
 
@@ -32,10 +33,7 @@ fn start_backend(app: &AppHandle) {
     let spawned = app
         .shell()
         .sidecar("better-search-helper")
-        .map(|cmd| match settings::path(app) {
-            Some(path) => cmd.arg("-settings").arg(path),
-            None => cmd,
-        })
+        .map(|cmd| sidecar_args(app, cmd))
         .and_then(|cmd| cmd.spawn());
     let (mut rx, child) = match spawned {
         Ok(v) => v,
@@ -78,6 +76,17 @@ fn start_backend(app: &AppHandle) {
     });
 }
 
+/// The settings file, and the index when it's been moved off its default place.
+fn sidecar_args(app: &AppHandle, mut cmd: tauri_plugin_shell::process::Command) -> tauri_plugin_shell::process::Command {
+    if let Some(path) = settings::path(app) {
+        cmd = cmd.arg("-settings").arg(path);
+    }
+    if let Some(db) = storage::db_arg(app) {
+        cmd = cmd.arg("-db").arg(db);
+    }
+    cmd
+}
+
 /// The Go watcher: keeps the index current from filesystem changes. Unlike the
 /// search sidecar it runs for as long as the app does; Windows hands it each
 /// change, so it uses no CPU between them.
@@ -94,10 +103,7 @@ fn start_watcher(app: &AppHandle) {
     let spawned = app
         .shell()
         .sidecar("better-search-watcher")
-        .map(|cmd| match settings::path(app) {
-            Some(path) => cmd.arg("-settings").arg(path),
-            None => cmd,
-        })
+        .map(|cmd| sidecar_args(app, cmd))
         .and_then(|cmd| cmd.spawn());
     let (mut rx, child) = match spawned {
         Ok(v) => v,
@@ -1197,7 +1203,8 @@ pub fn run() {
             settings::update_settings,
             settings::pause_shortcut,
             settings::list_drives,
-            settings::storage_usage,
+            storage::index_location,
+            storage::move_index,
             web_search::api_keys,
             web_search::save_api_key,
             web_search::remove_api_key,

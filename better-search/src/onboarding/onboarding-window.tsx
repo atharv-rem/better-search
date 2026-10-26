@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { FileMagnifyingGlassIcon, FolderOpenIcon, LockSimpleIcon, ShieldCheckIcon, type IconProps } from "@/lib/phosphor";
+import {
+  FileMagnifyingGlassIcon,
+  FolderOpenIcon,
+  HardDriveIcon,
+  LockSimpleIcon,
+  ShieldCheckIcon,
+  type IconProps,
+} from "@/lib/phosphor";
 import { backend, BackendError, type IndexProgress } from "@/lib/backend";
 import { saveSettings, type Settings } from "@/lib/settings";
+import { diskSize, indexLocation, moveIndex, roomyDrives, type Drive, type IndexLocation } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import { shortcutPill } from "@/lib/surface-classes";
 
-/** A drive from `list_drives` in settings.rs. */
-type Drive = { letter: string; ntfs: boolean };
-
 type Step =
   | { kind: "allow"; message?: string }
+  // The index's drive is short of space: pick another, or free some up.
+  | { kind: "space"; location: IndexLocation; drives: Drive[]; message?: string }
   | { kind: "asking" } // the Windows permission prompt is open
   | { kind: "indexing"; progress?: IndexProgress; overall: number }
   | { kind: "done"; count: number }
@@ -19,7 +26,8 @@ type Step =
 
 const STEPS = ["Permission", "Indexing", "Done"] as const;
 
-const stepOf = (step: Step) => (step.kind === "allow" || step.kind === "asking" || step.kind === "error" ? 0 : step.kind === "indexing" ? 1 : 2);
+const stepOf = (step: Step) =>
+  step.kind === "allow" || step.kind === "asking" || step.kind === "space" || step.kind === "error" ? 0 : step.kind === "indexing" ? 1 : 2;
 
 /** Marks the first run as over and closes the window. */
 async function finish() {
@@ -69,14 +77,31 @@ export function OnboardingWindow() {
       .catch(() => setStep({ kind: "done", count: 0 }));
   }, []);
 
+  /** Shows the drive choice if the index's drive is short of space (always,
+   *  with a message saying what went wrong) and resolves false; true if
+   *  there's room, or the space couldn't be read. */
+  const checkSpace = useCallback(async (message?: string) => {
+    try {
+      const [location, list] = await Promise.all([indexLocation(), invoke<Drive[]>("list_drives")]);
+      if (!message && location.free_bytes >= location.needed_bytes) return true;
+      setStep({ kind: "space", location, drives: list, message });
+      return false;
+    } catch {
+      return true; // couldn't tell: the backend checks again before indexing
+    }
+  }, []);
+
   useEffect(
     () =>
       backend.onEvent((e) => {
         if (e.type === "index_progress") setStep({ kind: "indexing", progress: e.progress, overall: overallOf(e.progress) });
         else if (e.type === "index_done") showDone();
-        else setStep({ kind: "error", message: e.error });
+        else if (e.code === "disk_full") {
+          const message = "The drive ran out of space while saving the index.";
+          checkSpace(message).then((unknown) => unknown && setStep({ kind: "error", message }));
+        } else setStep({ kind: "error", message: e.error });
       }),
-    [overallOf, showDone]
+    [overallOf, showDone, checkSpace]
   );
 
   // Where things stand when the window opens: the backend starts with it, so
@@ -91,6 +116,8 @@ export function OnboardingWindow() {
   }, []);
 
   const start = async () => {
+    // Before Windows' prompt: a full drive would only fail minutes in.
+    if (!(await checkSpace())) return;
     setStep({ kind: "asking" });
     furthest.current = 0;
     try {
@@ -101,6 +128,9 @@ export function OnboardingWindow() {
         setStep({ kind: "allow", message: "Windows permission was declined. Better Search can't search your drives without it." });
       } else if (err instanceof BackendError && err.code === "busy") {
         setStep({ kind: "indexing", overall: furthest.current });
+      } else if (err instanceof BackendError && err.code === "disk_full") {
+        const message = "There isn't enough free space to build the index.";
+        if (await checkSpace(message)) setStep({ kind: "error", message });
       } else {
         setStep({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
@@ -141,6 +171,8 @@ export function OnboardingWindow() {
         <div key={at} className="flex w-full max-w-[420px] flex-col items-center gap-6 text-center motion-safe:animate-fade-in">
           {step.kind === "allow" || step.kind === "asking" ? (
             <Permission step={step} onAllow={start} onSkip={finish} />
+          ) : step.kind === "space" ? (
+            <Space step={step} onContinue={start} />
           ) : step.kind === "indexing" ? (
             <Indexing step={step} />
           ) : step.kind === "done" ? (
@@ -202,6 +234,90 @@ function Permission({ step, onAllow, onSkip }: { step: Step; onAllow: () => void
           {asking ? "Waiting for permission…" : message ? "Try again" : "Allow and index"}
         </button>
         <button type="button" onClick={onSkip} className="text-[12px] leading-4 text-zinc-500 transition-colors hover:text-zinc-300">
+          Skip for now
+        </button>
+      </div>
+    </>
+  );
+}
+
+function Space({ step, onContinue }: { step: Extract<Step, { kind: "space" }>; onContinue: () => void }) {
+  const { location } = step;
+  const others = roomyDrives(location, step.drives).filter((d) => d.letter !== location.drive);
+  const [choice, setChoice] = useState(others[0]?.letter);
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const move = async () => {
+    if (!choice) return;
+    setMoving(true);
+    setError(null);
+    try {
+      await moveIndex(choice);
+      onContinue();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setMoving(false);
+    }
+  };
+
+  return (
+    <>
+      <Badge icon={HardDriveIcon} />
+      <div className="flex flex-col gap-2">
+        <h1 className="text-[20px] leading-6 font-semibold">
+          {others.length > 0 ? `Your ${location.drive} drive is almost full` : "Not enough disk space"}
+        </h1>
+        <p className="text-[13px] leading-5 text-zinc-400">
+          {step.message && `${step.message} `}
+          Better Search needs about {diskSize(location.needed_bytes)} free for its search index, and {location.drive} has{" "}
+          {diskSize(location.free_bytes)}.{" "}
+          {others.length > 0
+            ? "Keep the index on another drive instead. It still searches all of them."
+            : "Free up some space, then check again."}
+        </p>
+      </div>
+      {others.length > 0 && (
+        <div role="radiogroup" aria-label="Drive for the index" className="flex w-full flex-col gap-2 text-left text-[12px] leading-4">
+          {others.slice(0, 3).map((d) => (
+            <button
+              key={d.letter}
+              type="button"
+              role="radio"
+              aria-checked={choice === d.letter}
+              onClick={() => setChoice(d.letter)}
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 ring-1 transition-colors",
+                choice === d.letter
+                  ? "bg-white/[0.09] text-white ring-white/40"
+                  : "bg-white/[0.04] text-zinc-300 ring-white/[0.06] hover:bg-white/[0.07]"
+              )}
+            >
+              <HardDriveIcon size={16} className="shrink-0 text-zinc-400" />
+              <span className="flex-1 truncate">
+                {d.label || "Local Disk"} ({d.letter})
+              </span>
+              <span className="shrink-0 text-zinc-400 tabular-nums">{diskSize(d.free_bytes)} free</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="text-[12px] leading-4 text-amber-300/90">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-col items-center gap-2">
+        {others.length > 0 ? (
+          <button type="button" onClick={move} disabled={moving || !choice} className={primary}>
+            {moving ? "Moving…" : `Use ${choice} and continue`}
+          </button>
+        ) : (
+          <button type="button" onClick={onContinue} className={primary}>
+            Check again
+          </button>
+        )}
+        <button type="button" onClick={finish} className="text-[12px] leading-4 text-zinc-500 transition-colors hover:text-zinc-300">
           Skip for now
         </button>
       </div>

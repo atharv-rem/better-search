@@ -4,17 +4,12 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowsClockwiseIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, PlusIcon, XIcon } from "@/lib/phosphor";
 import { backend, BackendError, type IndexProgress, type IndexStatus } from "@/lib/backend";
 import type { Settings } from "@/lib/settings";
-import { ActionButton, Group, Row, Switch } from "@/settings/controls";
+import { diskSize, indexLocation, moveIndex, type Drive, type IndexLocation } from "@/lib/storage";
+import { ActionButton, Group, Row, Select, Switch } from "@/settings/controls";
 import { keepOpenWhile } from "@/settings/keep-open";
 import { ServerRack, type RackUnit } from "@/settings/server-rack";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
-
-/** A drive from `list_drives` in settings.rs. */
-type Drive = { letter: string; label: string; ntfs: boolean; total_bytes: number; free_bytes: number };
-
-/** From `storage_usage` in settings.rs. */
-type StorageUsage = { index_bytes: number };
 
 type RebuildState =
   | { kind: "idle"; message?: string }
@@ -57,7 +52,7 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [rebuild, setRebuild] = useState<RebuildState>({ kind: "idle" });
   const [drives, setDrives] = useState<Drive[] | null>(null);
-  const [storage, setStorage] = useState<StorageUsage | null>(null);
+  const [location, setLocation] = useState<IndexLocation | null>(null);
   // The exclusions the current index was built with, as far as this window
   // knows: changing them only shows once the index is rebuilt.
   const builtWith = useRef(JSON.stringify(indexing));
@@ -66,8 +61,8 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
   latestIndexing.current = indexing;
 
   const refreshStatus = useCallback(() => {
-    invoke<StorageUsage>("storage_usage")
-      .then(setStorage)
+    indexLocation()
+      .then(setLocation)
       .catch(() => {});
     return backend.status().then((s) => {
       setStatus(s);
@@ -91,7 +86,7 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
           setRebuild({ kind: "idle" });
           builtWith.current = JSON.stringify(latestIndexing.current);
           refreshStatus().catch(() => {});
-        } else setRebuild({ kind: "error", message: e.error });
+        } else setRebuild({ kind: "error", message: e.code === "disk_full" ? DISK_FULL : e.error });
       }),
     [refreshStatus]
   );
@@ -106,6 +101,8 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
         setRebuild({ kind: "idle", message: "Windows permission was declined, so the index wasn't rebuilt." });
       } else if (err instanceof BackendError && err.code === "busy") {
         setRebuild({ kind: "indexing" });
+      } else if (err instanceof BackendError && err.code === "disk_full") {
+        setRebuild({ kind: "error", message: DISK_FULL });
       } else {
         setRebuild({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
@@ -156,7 +153,7 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
     {
       lamp: "none",
       title: "Index database",
-      detail: storage ? fileSize(storage.index_bytes) : "…",
+      detail: location ? `${fileSize(location.index_bytes)} on ${location.drive}` : "…",
     },
     {
       lamp: "none",
@@ -188,6 +185,8 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
           </ActionButton>
         </Row>
       </Group>
+
+      <IndexDrive location={location} drives={drives} busy={busy} onMoved={setLocation} />
 
       <Group title="Drives to index" footer="Only NTFS drives can be indexed.">
         {drives === null ? (
@@ -223,6 +222,75 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
         onChange={(excluded_folders) => setIndexing({ excluded_folders })}
       />
     </>
+  );
+}
+
+const DISK_FULL = "There isn't enough free space on the index's drive. Free some up, or keep the index on another drive.";
+
+/** Which drive the index file is kept on. It covers every drive either way. */
+function IndexDrive({
+  location,
+  drives,
+  busy,
+  onMoved,
+}: {
+  location: IndexLocation | null;
+  drives: Drive[] | null;
+  busy: boolean;
+  onMoved: (location: IndexLocation) => void;
+}) {
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const move = async (drive: string) => {
+    if (!location || drive === location.drive) return;
+    setMoving(true);
+    setError(null);
+    try {
+      onMoved(await moveIndex(drive));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMoving(false);
+    }
+  };
+
+  const short = location !== null && location.free_bytes < location.needed_bytes;
+  return (
+    <Group
+      title="Index location"
+      footer="Where the index file is kept. Move it to a drive with more free space if this one is filling up; it still searches every drive."
+    >
+      <Row
+        icon={<HardDriveIcon size={18} />}
+        label={location ? location.folder : "…"}
+        description={
+          location &&
+          (short ? (
+            <span className="text-amber-300/90">
+              {location.drive} has {diskSize(location.free_bytes)} free. Rebuilding needs about {diskSize(location.needed_bytes)}.
+            </span>
+          ) : (
+            `${diskSize(location.free_bytes)} free on ${location.drive}`
+          ))
+        }
+        error={error}
+      >
+        {location && drives && !busy && !moving ? (
+          <Select
+            label="Drive for the index"
+            value={location.drive}
+            options={drives.map((d) => ({
+              value: d.letter,
+              label: `${d.letter}${d.letter === location.default_drive ? " (default)" : ""} · ${diskSize(d.free_bytes)} free`,
+            }))}
+            onChange={move}
+          />
+        ) : (
+          <ActionButton disabled>{moving ? "Moving…" : (location?.drive ?? "…")}</ActionButton>
+        )}
+      </Row>
+    </Group>
   );
 }
 

@@ -28,6 +28,7 @@ const (
 const (
 	CodeAdminDenied = "admin_denied" // user declined the UAC prompt
 	CodeBusy        = "busy"         // indexing already running
+	CodeDiskFull    = "disk_full"    // the index's drive is out of space
 )
 
 type Request struct {

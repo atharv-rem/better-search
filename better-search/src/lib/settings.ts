@@ -42,6 +42,9 @@ export interface Settings {
   ui_scale: number;
   /** The first-run screen has been finished or skipped. */
   onboarded: boolean;
+  /** The index's folder when it was moved to another drive, empty for the
+   *  default place. Only `moveIndex` (storage.ts) changes it. */
+  index_folder: string;
 }
 
 export const DEFAULT_WEB_TRIGGER = "/";
@@ -55,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ui_scale: 1,
   // Only a fallback for a failed read; the first-run screen is the shell's call.
   onboarded: true,
+  index_folder: "",
 };
 
 /** Matches `validate` in settings.rs. */

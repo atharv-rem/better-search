@@ -129,7 +129,12 @@ func main() {
 			// reading requests meanwhile.
 			go func(id string) {
 				defer indexing.Store(false)
-				session, err := indexer.Start(*dbPath)
+				// Before the UAC prompt: a full disk would only fail minutes in.
+				err := indexer.CheckSpace(*dbPath)
+				var session *indexer.Session
+				if err == nil {
+					session, err = indexer.Start(*dbPath)
+				}
 				if err != nil {
 					code := ""
 					switch {
@@ -137,6 +142,8 @@ func main() {
 						code = ipc.CodeAdminDenied
 					case errors.Is(err, indexer.ErrBusy):
 						code = ipc.CodeBusy
+					case errors.Is(err, indexer.ErrDiskFull):
+						code = ipc.CodeDiskFull
 					}
 					out.ErrorCode(id, ipc.TypeReindex, code, err.Error())
 					return
@@ -147,7 +154,11 @@ func main() {
 				})
 				if err != nil {
 					log.Printf("Indexing failed: %v", err)
-					out.Error("", ipc.EventIndexError, err.Error())
+					code := ""
+					if database.IsDiskFull(err) {
+						code = ipc.CodeDiskFull
+					}
+					out.ErrorCode("", ipc.EventIndexError, code, err.Error())
 					return
 				}
 				// Closes the connection that wrote the index, and its big cache.

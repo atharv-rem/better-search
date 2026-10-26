@@ -52,7 +52,7 @@ interface Message {
 export type BackendEvent =
   | { type: "index_progress"; progress: IndexProgress }
   | { type: "index_done"; stats: DriveStats[] }
-  | { type: "index_error"; error: string };
+  | { type: "index_error"; error: string; code?: string };
 
 export class BackendError extends Error {
   code?: string;
@@ -88,7 +88,7 @@ listen<string>("backend-message", ({ payload }) => {
   let event: BackendEvent | null = null;
   if (msg.type === "index_progress") event = { type: msg.type, progress: msg.data as IndexProgress };
   else if (msg.type === "index_done") event = { type: msg.type, stats: (msg.data as DriveStats[]) ?? [] };
-  else if (msg.type === "index_error") event = { type: msg.type, error: msg.error ?? "indexing failed" };
+  else if (msg.type === "index_error") event = { type: msg.type, error: msg.error ?? "indexing failed", code: msg.code };
   if (event) eventListeners.forEach((fn) => fn(event));
 });
 
@@ -127,7 +127,8 @@ export const backend = {
   },
 
   /** Starts a full index. Windows shows the UAC prompt; resolves once the
-   *  user has accepted, rejects with code "admin_denied" if they decline. */
+   *  user has accepted, rejects with code "admin_denied" if they decline, or
+   *  "disk_full" (before asking) if the index's drive is short of space. */
   async reindex(): Promise<void> {
     await request("reindex");
   },
