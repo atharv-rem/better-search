@@ -1092,6 +1092,54 @@ fn can_update(app: AppHandle) -> bool {
     updates_configured(app.config())
 }
 
+/// The newer version the daily check found, for the dot on the search bar's
+/// settings button and on the About page.
+#[derive(Default)]
+struct PendingUpdate(Mutex<Option<String>>);
+
+#[tauri::command]
+fn pending_update(state: tauri::State<'_, PendingUpdate>) -> Option<String> {
+    state.0.lock().unwrap().clone()
+}
+
+/// The app runs in the background for days, so it looks for an update once a
+/// day, not only at launch. It wakes hourly and compares the clock, since a
+/// PC asleep overnight doesn't run down a 24-hour timer.
+fn start_update_checks(app: &AppHandle) {
+    use std::time::{Duration, SystemTime};
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_updater::UpdaterExt;
+        // Out of the way of startup: the indexer and the search window.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let mut last_check: Option<SystemTime> = None;
+        loop {
+            // A clock set back counts as due.
+            let due = last_check.is_none_or(|t| t.elapsed().map_or(true, |since| since >= DAY));
+            if due {
+                match app.updater().map_err(|e| e.to_string()) {
+                    Ok(updater) => match updater.check().await {
+                        Ok(found) => {
+                            last_check = Some(SystemTime::now());
+                            let version = found.map(|u| u.version);
+                            if let Some(v) = &version {
+                                log::info!("Update {v} is available.");
+                            }
+                            *app.state::<PendingUpdate>().0.lock().unwrap() = version.clone();
+                            let _ = app.emit("update-available", version);
+                        }
+                        // Offline, say: try again next hour.
+                        Err(e) => log::warn!("Couldn't check for updates: {e}"),
+                    },
+                    Err(e) => log::warn!("Couldn't check for updates: {e}"),
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
@@ -1107,6 +1155,7 @@ pub fn run() {
         .manage(Backend::default())
         .manage(Watcher::default())
         .manage(BarLayout::default())
+        .manage(PendingUpdate::default())
         // The app is named "Better Search" (productName, which Task Manager
         // shows); its login entry and log file keep the names they had.
         .plugin(tauri_plugin_autostart::Builder::new().app_name("better-search").build())
@@ -1143,6 +1192,7 @@ pub fn run() {
             quit_app,
             open_logs_folder,
             can_update,
+            pending_update,
             settings::get_settings,
             settings::update_settings,
             settings::pause_shortcut,
@@ -1172,6 +1222,9 @@ pub fn run() {
             }
             start_watcher(app.handle());
             start_backend(app.handle());
+            if updates_configured(app.config()) {
+                start_update_checks(app.handle());
+            }
 
             // Build the window now, hidden, so the first Alt+S only has to
             // show it instead of waiting on WebView2 to start. The page

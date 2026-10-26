@@ -1,9 +1,23 @@
 ; Extra steps for the NSIS installer (bundle.windows.nsis.installerHooks).
 
-; The helper programs run beside the app and keep their files locked, so the
-; installer and uninstaller stop them first. The installer already closes the
-; main program.
+; The app and its helper programs keep their files locked, so the installer and
+; uninstaller stop them first. The installer's own check for the running app
+; gives up ("Failed to kill Better Search") when the app is still on its way
+; out, as it is right after the updater starts this installer and quits. So
+; close it here and wait until it's gone; that check then finds nothing.
 !macro StopBetterSearchPrograms
+  StrCpy $R1 0
+  ${Do}
+    nsExec::Exec 'taskkill /F /IM better-search.exe'
+    Pop $R0
+    ; 128: none left. Give up after ~10s and let the installer's check decide.
+    ${If} $R0 = 128
+    ${OrIf} $R1 >= 40
+      ${ExitDo}
+    ${EndIf}
+    Sleep 250
+    IntOp $R1 $R1 + 1
+  ${Loop}
   nsExec::Exec 'taskkill /F /IM better-search-helper.exe'
   nsExec::Exec 'taskkill /F /IM better-search-watcher.exe'
   nsExec::Exec 'taskkill /F /IM better-search-indexer.exe'

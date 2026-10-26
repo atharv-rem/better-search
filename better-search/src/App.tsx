@@ -21,6 +21,7 @@ import { WebResults } from "@/components/web-results";
 import { TypeFilter } from "@/components/type-filter";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
 import { cn } from "@/lib/utils";
+import { usePendingUpdate } from "@/lib/update";
 import { panelShadow, shortcutPill } from "@/lib/surface-classes";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
 import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchUrl, type Settings } from "@/lib/settings";
@@ -169,6 +170,7 @@ function useMemoryUsage(shownAt: number) {
 function App() {
   const [shownAt, setShownAt] = useState(0); // bumps on every Alt+S
   const memoryMb = useMemoryUsage(shownAt);
+  const pendingUpdate = usePendingUpdate(shownAt);
   const [searchMs, setSearchMs] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -663,10 +665,13 @@ function App() {
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="Settings"
+              aria-label={pendingUpdate ? `Settings (update ${pendingUpdate} available)` : "Settings"}
+              title={pendingUpdate ? `Update ${pendingUpdate} available` : undefined}
+              className="relative"
               onClick={() => invoke("open_settings").catch((err) => console.error("Failed to open settings:", err))}
             >
               <GearSixIcon size={16} />
+              {pendingUpdate && <span className="absolute top-1 right-1 size-1.5 rounded-full bg-sky-400" />}
             </Button>
           }
         />

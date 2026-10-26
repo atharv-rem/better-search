@@ -6,7 +6,6 @@ import { backend, BackendError, type IndexProgress } from "@/lib/backend";
 import { saveSettings, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { shortcutPill } from "@/lib/surface-classes";
-import "@/onboarding/onboarding.css";
 
 /** A drive from `list_drives` in settings.rs. */
 type Drive = { letter: string; ntfs: boolean };

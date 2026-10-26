@@ -2,6 +2,10 @@ import React, { type ComponentType } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import './App.css'
+// Imported here, not by the lazy pages: the bundler emits a lazy page's CSS
+// without linking it, so in a release build those pages came up unstyled.
+import './settings/server-rack.css'
+import './onboarding/onboarding.css'
 
 // Every window loads this page; lib.rs labels the settings and first-run ones.
 // Each loads only its own page's code: the search window, which stays open in

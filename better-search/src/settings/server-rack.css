@@ -21,13 +21,6 @@
   overflow: visible;
 }
 
-.rk-svg path,
-.rk-svg rect,
-.rk-svg ellipse,
-.rk-svg circle {
-  vector-effect: non-scaling-stroke;
-}
-
 .rk-face {
   stroke: var(--line);
   stroke-width: 0.8;
@@ -297,7 +290,9 @@
   fill: #a1a1aa;
 }
 
-.rk-hit {
+.rk-hit,
+.rk-hit:focus,
+.rk-hit:focus-visible {
   cursor: pointer;
   outline: none;
 }

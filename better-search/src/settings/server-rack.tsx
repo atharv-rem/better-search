@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import "@/settings/server-rack.css";
 
 /** One thing mounted in the rack. Its properties are read off the labels beside it. */
 export type RackUnit = {
@@ -159,13 +158,6 @@ export function ServerRack({ top, bottom, indexing }: { top: RackUnit[]; bottom:
         data-hover={active !== null ? "" : undefined}
       >
         <defs>
-          <filter id="rk-glow" filterUnits="userSpaceOnUse" x="-20" y="-20" width={WIDTH + 40} height={g.viewHeight + 40}>
-            <feGaussianBlur stdDeviation="2.2" result="b" />
-            <feMerge>
-              <feMergeNode in="b" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
           <linearGradient id="rk-leader" gradientUnits="userSpaceOnUse" x1={labelLeft + 8} y1="0" x2={g.cam.P(INSET, FACE_Y, 0)[0]} y2="0">
             <stop offset="0" stopColor="#71717a" stopOpacity="0.35" />
             <stop offset="1" stopColor="#a1a1aa" />
@@ -221,7 +213,7 @@ export function ServerRack({ top, bottom, indexing }: { top: RackUnit[]; bottom:
               data-active={on ? "" : undefined}
               data-locate={located === i ? "" : undefined}
             >
-              <path className="rk-spot" d={front} filter="url(#rk-glow)" />
+              <path className="rk-spot" d={front} />
               <path className="rk-leader" d={`M${f(labelLeft + 8)} ${f(ly)}H${f(lx)}`} />
               <circle className="rk-pin-ring" cx={f(lx)} cy={f(ly)} r={4.6} />
               <circle className="rk-pin" cx={f(lx)} cy={f(ly)} r={1.9} />

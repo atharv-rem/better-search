@@ -19,6 +19,7 @@ import {
 } from "@/lib/phosphor";
 import { saveSettings, useSettings, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { usePendingUpdate } from "@/lib/update";
 import { panelShadow } from "@/lib/surface-classes";
 import { ActionButton, Group, Row } from "@/settings/controls";
 import { ApiKeysSection } from "@/settings/api-keys-section";
@@ -64,6 +65,7 @@ export function SettingsWindow() {
   const settings = useSettings();
   const [sectionId, setSectionId] = useState(loadSection);
   const section = SECTIONS.find((s) => s.id === sectionId) ?? SECTIONS[0];
+  const pendingUpdate = usePendingUpdate();
   const latest = useRef(settings);
   latest.current = settings;
 
@@ -146,6 +148,9 @@ export function SettingsWindow() {
                 <Icon size={14} weight={active ? "fill" : "regular"} />
               </span>
               <span className="truncate">{name}</span>
+              {id === "about" && pendingUpdate && (
+                <span className="ml-auto size-1.5 shrink-0 rounded-full bg-sky-400" aria-label="Update available" />
+              )}
             </button>
           );
         })}
@@ -199,6 +204,12 @@ function AboutSection() {
       .then((can) => !can && setUpdate({ kind: "unavailable" }))
       .catch(() => {});
   }, []);
+
+  // The daily check found one: fetch it so the page offers it straight away.
+  const pendingUpdate = usePendingUpdate();
+  useEffect(() => {
+    if (pendingUpdate && (update.kind === "idle" || update.kind === "latest")) checkForUpdate();
+  }, [pendingUpdate]);
 
   const checkForUpdate = async () => {
     setUpdate({ kind: "checking" });
