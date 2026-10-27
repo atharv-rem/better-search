@@ -35,6 +35,7 @@ const (
 	bufferSize = 256 << 10 // bytes Windows can queue between reads, per drive
 	settleTime = 2 * time.Second
 	retryTime  = 15 * time.Second
+	idleTime   = 30 * time.Second // after the last batch, before closing the index and trimming memory
 	maxDirty   = 200_000 // more than this and we give up tracking paths and mark the index stale
 
 	notifyMask = windows.FILE_NOTIFY_CHANGE_FILE_NAME |
@@ -57,7 +58,13 @@ type watcher struct {
 	dirty    map[string]struct{}
 	overflow bool // events were lost, or too many to keep track of
 	pending  bool // a flush is scheduled
-	procMu   sync.Mutex
+
+	// Held while a batch is applied, and for db and idle.
+	procMu sync.Mutex
+	// The index, kept open from one batch to the next while changes keep
+	// coming (a build, a download), and closed once they stop (goIdle).
+	db   *database.DB
+	idle *time.Timer
 }
 
 // Run watches every indexed NTFS drive until the process is stopped. Returns
@@ -263,24 +270,52 @@ func (w *watcher) flush() {
 		retry()
 		return
 	}
-	if err := w.apply(paths, overflow); err != nil {
+	err := w.apply(paths, overflow)
+	if err != nil {
 		log.Printf("WARN: Apply changes: %v", err)
+		w.closeDB() // opened again for the retry, in case it was the connection
 		retry()
-		return
 	}
+	// Not after every batch: while changes keep coming, a trim would only
+	// throw away what the next batch, 2 s later, reads back in.
+	if w.idle == nil {
+		w.idle = time.AfterFunc(idleTime, w.goIdle)
+	} else {
+		w.idle.Reset(idleTime)
+	}
+}
+
+// goIdle runs once no batch has come for idleTime: it closes the index, and
+// its page cache, and gives the memory back.
+func (w *watcher) goIdle() {
+	w.procMu.Lock()
+	defer w.procMu.Unlock()
+	w.closeDB()
 	memory.Trim()
 }
 
-// apply brings the index in line with the disk for every dirty path.
+// closeDB must be called with procMu held.
+func (w *watcher) closeDB() {
+	if w.db != nil {
+		w.db.Close()
+		w.db = nil
+	}
+}
+
+// apply brings the index in line with the disk for every dirty path. Called
+// with procMu held.
 func (w *watcher) apply(paths map[string]struct{}, overflow bool) error {
 	if len(paths) == 0 && !overflow {
 		return nil
 	}
-	db, err := database.Open(w.dbPath)
-	if err != nil {
-		return err
+	if w.db == nil {
+		db, err := database.Open(w.dbPath)
+		if err != nil {
+			return err
+		}
+		w.db = db
 	}
-	defer db.Close()
+	db := w.db
 
 	if overflow {
 		if err := db.MarkStale(); err != nil {

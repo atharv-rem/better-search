@@ -12,45 +12,17 @@ import (
 
 const fileColumns = `f.id, f.parent_id, f.name, f.is_dir, f.size, f.modified_at, f.open_count, f.last_opened`
 
-// exactName matches a name equal to the query, with or without its extension
-// ("resume" matches Resume.pdf). Args: query, query + ".%", query length.
-const exactName = `(f.name = ? COLLATE NOCASE
-  OR (f.name LIKE ? ESCAPE '\' AND instr(substr(f.name, ? + 2), '.') = 0))`
-
-// Ranking by kind first: an exact file or a shortcut (.lnk) starting with the
-// query or with a word starting with it ("Visual Studio Code"), then apps
-// (.exe) starting with the query, then other shortcuts and folders, then
-// other files. Within each:
-// exact name, the files the user opens most and most recently, names
-// starting with the query, names with a word starting with it (after a
-// space, dot, underscore or dash), then shorter names.
-const rankOrder = `
-ORDER BY CASE
-           WHEN f.name LIKE '%.lnk' AND (f.name LIKE ? ESCAPE '\' OR f.name LIKE ? ESCAPE '\') THEN 0
-           WHEN f.is_dir = 1 OR f.name LIKE '%.lnk' THEN 2
-           WHEN ` + exactName + ` THEN 0
-           WHEN f.name LIKE '%.exe' AND f.name LIKE ? ESCAPE '\' THEN 1
-           ELSE 3
-         END,
-         ` + exactName + ` DESC,
-         f.open_count DESC,
-         f.last_opened DESC,
-         CASE
-           WHEN f.name LIKE ? ESCAPE '\' THEN 0
-           WHEN f.name LIKE ? ESCAPE '\' OR f.name LIKE ? ESCAPE '\'
-             OR f.name LIKE ? ESCAPE '\' OR f.name LIKE ? ESCAPE '\' THEN 1
-           ELSE 2
-         END,
-         length(f.name),
-         f.name`
-
-// SearchNames finds files whose names contain every term. Terms of 3+
-// characters use the trigram index; trigram MATCH can't see substrings under
-// 3 characters, so shorter terms filter the matches with LIKE. When every
-// term is short, names must start with the first one: a substring scan of
-// every name takes ~0.5 s on a million files, a prefix lookup is instant.
-// Cancelling ctx stops the query where it is.
+// SearchNames finds files whose names contain every term, the best limit of
+// them first (see rank.go). Terms of 3+ characters use the trigram index;
+// trigram MATCH can't see substrings under 3 characters, so shorter terms
+// filter the matches with LIKE. When every term is short, names must start
+// with the first one: a substring scan of every name takes ~0.5 s on a
+// million files, a prefix lookup is instant. Cancelling ctx stops the query
+// where it is.
 func (d *DB) SearchNames(ctx context.Context, query string, terms []string, limit int) ([]File, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	var long, short []string
 	for _, t := range terms {
 		if utf8.RuneCountInString(t) >= 3 {
@@ -60,9 +32,12 @@ func (d *DB) SearchNames(ctx context.Context, query string, terms []string, limi
 		}
 	}
 
+	// Every match is read to be ranked, and the driver's cost is per column:
+	// only what ranking needs, the usage and folder flag in one number. The
+	// winners' other fields are read after (fillFiles).
 	var q strings.Builder
 	var args []any
-	q.WriteString("SELECT " + fileColumns)
+	q.WriteString("SELECT f.id, f.name, f.open_count << 1 | f.is_dir, coalesce(f.last_opened, 0)")
 	if len(long) > 0 {
 		phrases := make([]string, len(long))
 		for i, t := range long {
@@ -80,14 +55,6 @@ func (d *DB) SearchNames(ctx context.Context, query string, terms []string, limi
 		q.WriteString(` AND f.name LIKE ? ESCAPE '\'`)
 		args = append(args, "%"+escapeLike(t)+"%")
 	}
-	q.WriteString(rankOrder + " LIMIT ?")
-	esc := escapeLike(query)
-	exact := []any{query, esc + ".%", utf8.RuneCountInString(query)}
-	args = append(args, esc+"%", "% "+esc+"%")
-	args = append(args, exact...)
-	args = append(args, esc+"%")
-	args = append(args, exact...)
-	args = append(args, esc+"%", "% "+esc+"%", "%."+esc+"%", `%\_`+esc+"%", "%-"+esc+"%", limit)
 
 	rows, err := d.sql.QueryContext(ctx, q.String(), args...)
 	if err != nil {
@@ -95,15 +62,62 @@ func (d *DB) SearchNames(ctx context.Context, query string, terms []string, limi
 	}
 	defer rows.Close()
 
-	var out []File
+	r := newRanker(query)
+	top := make(topN, 0, min(limit, 1024)) // grows past it only for a huge limit with that many matches
 	for rows.Next() {
-		f, err := scanFile(rows)
-		if err != nil {
+		var f File
+		var usage int64
+		if err := rows.Scan(&f.ID, &f.Name, &usage, &f.LastOpened); err != nil {
 			return nil, err
 		}
-		out = append(out, f)
+		f.OpenCount, f.IsDir = usage>>1, usage&1 != 0
+		top.add(r.rank(f), limit)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	files := top.files()
+	return files, d.fillFiles(ctx, files)
+}
+
+const fillSQL = `SELECT id, parent_id, size, modified_at FROM files WHERE id IN (SELECT value FROM json_each(?))`
+
+// fillFiles reads the fields SearchNames doesn't rank by.
+func (d *DB) fillFiles(ctx context.Context, files []File) error {
+	if len(files) == 0 {
+		return nil
+	}
+	ids := []byte{'['}
+	at := make(map[int64]int, len(files))
+	for i, f := range files {
+		if i > 0 {
+			ids = append(ids, ',')
+		}
+		ids = strconv.AppendInt(ids, f.ID, 10)
+		at[f.ID] = i
+	}
+	ids = append(ids, ']')
+	s, err := d.prepared(fillSQL)
+	if err != nil {
+		return err
+	}
+	rows, err := s.QueryContext(ctx, string(ids))
+	if err != nil {
+		return fmt.Errorf("search: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var parent sql.NullInt64
+		var size, mtime int64
+		if err := rows.Scan(&id, &parent, &size, &mtime); err != nil {
+			return err
+		}
+		f := &files[at[id]]
+		f.ParentID, f.Size, f.ModifiedAt = parent.Int64, size, mtime
+	}
+	return rows.Err()
 }
 
 func scanFile(rows *sql.Rows) (File, error) {
