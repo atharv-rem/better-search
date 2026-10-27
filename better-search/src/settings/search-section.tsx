@@ -2,66 +2,122 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { SEARCH_ENGINES, type Settings } from "@/lib/settings";
 import { BrowserIcon, useInstalledBrowsers } from "@/components/browser-icon";
-import { shortcutPill } from "@/lib/surface-classes";
-import { ActionButton, Group, Row, Segmented, Select, Switch } from "@/settings/controls";
+import {
+  CheckIcon,
+  ClockCounterClockwiseIcon,
+  EyeIcon,
+  FileIcon,
+  FolderOpenIcon,
+  MagnifyingGlassIcon,
+  TrashIcon,
+  XIcon,
+} from "@/lib/phosphor";
+import { cn } from "@/lib/utils";
+import { ActionButton, Group, Keys, Row, Segmented, Select, Switch } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
-const RESULT_LIMITS = [25, 50, 100, 200, 500].map((n) => ({ value: n, label: `${n} results` }));
+const RESULT_LIMITS = [25, 50, 100, 200, 500].map((n) => ({ value: n, label: String(n) }));
+
+const ENTER_ACTIONS = [
+  { value: "open", label: "Open the file", description: "In the app it belongs to.", icon: FileIcon },
+  { value: "reveal", label: "Show in Explorer", description: "Its folder, with it selected.", icon: FolderOpenIcon },
+] as const;
 
 export function SearchSection({ settings, save }: { settings: Settings; save: Save }) {
   const { search } = settings;
   const set = (change: Partial<Settings["search"]>) => save((s) => ({ ...s, search: { ...s.search, ...change } }));
   const [cleared, setCleared] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
+  const enter = search.enter_reveals ? "reveal" : "open";
 
   return (
     <>
-      <Group>
-        <Row label="Results" description="How many matches a search lists at most.">
-          <Select
+      <Group title="Results">
+        <Row label="Results per search" description="The most matches a search lists." icon={<MagnifyingGlassIcon size={18} />}>
+          <Segmented
             label="Results"
             value={search.max_results}
             // A limit picked elsewhere (the file) still shows.
             options={
               RESULT_LIMITS.some((o) => o.value === search.max_results)
                 ? RESULT_LIMITS
-                : [...RESULT_LIMITS, { value: search.max_results, label: `${search.max_results} results` }]
+                : [...RESULT_LIMITS, { value: search.max_results, label: String(search.max_results) }]
             }
             onChange={(max_results) => set({ max_results })}
           />
         </Row>
-        <Row label="Enter" description={
-            <>
-              What <span className={shortcutPill}>Enter</span> does to a result. <span className={shortcutPill}>Ctrl + Enter</span> does the other.
-            </>
-          }>
-          <Segmented
-            label="Enter"
-            value={search.enter_reveals ? "reveal" : "open"}
-            options={[
-              { value: "open", label: "Open file" },
-              { value: "reveal", label: "Show in Explorer" },
-            ]}
-            onChange={(v) => set({ enter_reveals: v === "reveal" })}
+        <div>
+          <Row
+            label="Enter on a result"
+            description="Pick what Enter does. Ctrl + Enter does the other."
+            icon={<span className="flex size-[18px] items-center justify-center text-[16px] leading-none">↵</span>}
           />
-        </Row>
+          <div role="radiogroup" aria-label="Enter on a result" className="grid grid-cols-2 gap-2 px-3.5 pb-3.5">
+            {ENTER_ACTIONS.map(({ value, label, description, icon: Icon }) => {
+              const chosen = value === enter;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={chosen}
+                  onClick={() => set({ enter_reveals: value === "reveal" })}
+                  className={cn(
+                    "flex items-start gap-2.5 rounded-lg p-2.5 text-left ring-1 transition-colors outline-hidden focus-visible:ring-[#6B97FF]",
+                    chosen ? "bg-white/[0.07] ring-white/25" : "ring-white/[0.07] hover:bg-white/[0.03]"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex size-8 shrink-0 items-center justify-center rounded-md",
+                      chosen ? "bg-white text-black" : "bg-white/[0.06] text-zinc-400"
+                    )}
+                  >
+                    <Icon size={16} weight={chosen ? "duotone" : "regular"} />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="text-[12px] leading-4 text-white">{label}</span>
+                    <span className="text-[11px] leading-4 text-zinc-500">{description}</span>
+                    <Keys keys={chosen ? ["Enter"] : ["Ctrl", "Enter"]} className="mt-0.5" />
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded-full ring-1",
+                      chosen ? "bg-white ring-white" : "ring-white/20"
+                    )}
+                  >
+                    {chosen && <span className="size-1.5 rounded-full bg-black" />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </Group>
-      <Group>
-        <Row label="Preview" description="Show a thumbnail or the first lines of the selected result.">
+      <Group title="Search window">
+        <Row label="Preview" description="Show a thumbnail or the first lines of the selected result." icon={<EyeIcon size={18} />}>
           <Switch checked={search.show_preview} onChange={(show_preview) => set({ show_preview })} label="Preview" />
         </Row>
-        <Row label="Clear the search when closed" description="Start from an empty box instead of your last search.">
+        <Row
+          label="Clear the search when closed"
+          description="Start from an empty box instead of your last search."
+          icon={<XIcon size={18} />}
+        >
           <Switch
             checked={search.clear_on_close}
             onChange={(clear_on_close) => set({ clear_on_close })}
             label="Clear the search when closed"
           />
         </Row>
+      </Group>
+      <Group title="History">
         <Row
           label="Recent searches"
           description="List your last searches under the empty search box. Turning this off forgets them."
           error={clearError}
+          icon={<ClockCounterClockwiseIcon size={18} />}
         >
           {search.remember_recent && (
             <ActionButton
@@ -75,6 +131,7 @@ export function SearchSection({ settings, save }: { settings: Settings; save: Sa
                   .catch((err) => setClearError(String(err)))
               }
             >
+              {cleared ? <CheckIcon size={14} /> : <TrashIcon size={14} />}
               {cleared ? "Cleared" : "Clear"}
             </ActionButton>
           )}

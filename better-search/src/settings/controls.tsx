@@ -130,7 +130,7 @@ export function Select<T extends string | number>({
 }
 
 /** A choice between a few options shown side by side. */
-export function Segmented<T extends string>({
+export function Segmented<T extends string | number>({
   value,
   options,
   onChange,
@@ -151,7 +151,7 @@ export function Segmented<T extends string>({
           aria-checked={o.value === value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "h-6 rounded-[5px] px-2.5 text-[11px] leading-4 transition-colors",
+            "h-6 rounded-[5px] px-2.5 text-[11px] leading-4 tabular-nums transition-colors",
             o.value === value ? "bg-white text-black" : "text-zinc-300 hover:text-white"
           )}
         >
@@ -179,5 +179,35 @@ export function ActionButton({
         className
       )}
     />
+  );
+}
+
+const MODIFIER_NAMES: Record<string, string> = { Control: "Ctrl", Super: "Win", CommandOrControl: "Ctrl", Ctrl: "Ctrl" };
+
+/** An accelerator's keys as they're printed on a keyboard: "Control+ArrowUp"
+ *  is Ctrl, Up. */
+export function keysOf(accelerator: string) {
+  return accelerator.split("+").map((k) => MODIFIER_NAMES[k] ?? k.replace(/^Arrow/, ""));
+}
+
+/** Keys as keycaps, side by side: a small set for in a list, a large one for
+ *  the shortcut that matters most. */
+export function Keys({ keys, size = "sm", className }: { keys: readonly string[]; size?: "sm" | "lg"; className?: string }) {
+  return (
+    <span className={cn("inline-flex items-center align-middle", size === "lg" ? "gap-2" : "gap-1", className)}>
+      {keys.map((k, i) => (
+        <kbd
+          key={i}
+          className={cn(
+            "inline-flex items-center justify-center bg-gradient-to-b from-white/[0.11] to-white/[0.05] font-sans font-medium text-zinc-100 ring-1 ring-white/[0.08]",
+            size === "lg"
+              ? "h-11 min-w-11 rounded-lg px-3.5 text-[15px] leading-5 shadow-[inset_0_-3px_0_rgb(0_0_0/0.45),0_1px_0_rgb(255_255_255/0.04)]"
+              : "h-5 min-w-5 rounded-[5px] px-1.5 text-[11px] leading-3 shadow-[inset_0_-1px_0_rgb(0_0_0/0.45)]"
+          )}
+        >
+          {k}
+        </kbd>
+      ))}
+    </span>
   );
 }
