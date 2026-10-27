@@ -9,6 +9,7 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
+mod calc;
 mod docx;
 mod logs;
 mod recent;
@@ -1339,7 +1340,8 @@ pub fn run() {
             web_search::favicon,
             web_search::api_usage,
             recent::add_recent_search,
-            recent::clear_recent_searches
+            recent::clear_recent_searches,
+            calc::calculate
         ])
         .setup(|app| {
             // No window until the first Alt+S ("create": false in tauri.conf.json).

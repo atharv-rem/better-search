@@ -15,6 +15,8 @@ interface SearchBoxProps {
   onValueChange: (value: string) => void;
   placeholder?: string;
   maxRows?: number;
+  /** Green text right after what's typed: the calculator's answer. */
+  ghost?: string;
   /** Under the text, on the left: a hint. */
   leftSlot?: ReactNode;
   /** Under the text, on the right: buttons. */
@@ -25,7 +27,7 @@ interface SearchBoxProps {
 }
 
 export const SearchBox = forwardRef<HTMLDivElement, SearchBoxProps>(
-  ({ value, onValueChange, placeholder, maxRows = 4, leftSlot, rightSlot, className, textareaClassName, style }, ref) => {
+  ({ value, onValueChange, placeholder, maxRows = 4, ghost, leftSlot, rightSlot, className, textareaClassName, style }, ref) => {
     const shape = useShape();
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const lineHeight = useRef(0);
@@ -75,22 +77,41 @@ export const SearchBox = forwardRef<HTMLDivElement, SearchBoxProps>(
         )}
         style={style}
       >
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => onValueChange(e.target.value)}
-          placeholder={placeholder}
-          rows={1}
-          aria-label="Search"
-          className={cn(
-            "w-full resize-none rounded-none bg-transparent px-1.5 py-1.5 outline-none",
-            "text-[length:var(--fs-subtitle-compact,13px)] leading-[var(--lh-subtitle-compact,18px)]",
-            "text-foreground placeholder:text-muted-foreground",
-            fieldTouchClass,
-            textareaClassName
+        {/* The ghost sits on a copy of the text laid out like the textarea's,
+            so it starts where the typing ends, wrapped lines and all. */}
+        <div className="relative">
+          {ghost && (
+            <div
+              aria-hidden
+              className={cn(
+                "pointer-events-none absolute inset-0 overflow-hidden px-1.5 py-1.5 wrap-break-word whitespace-pre-wrap",
+                "text-[length:var(--fs-subtitle-compact,13px)] leading-[var(--lh-subtitle-compact,18px)]",
+                fieldTouchClass,
+                textareaClassName
+              )}
+              style={{ fontVariationSettings: fontWeights.normal }}
+            >
+              <span className="invisible">{value}</span>
+              <span className="text-emerald-400"> {ghost}</span>
+            </div>
           )}
-          style={{ fontVariationSettings: fontWeights.normal }}
-        />
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => onValueChange(e.target.value)}
+            placeholder={placeholder}
+            rows={1}
+            aria-label="Search"
+            className={cn(
+              "block w-full resize-none rounded-none bg-transparent px-1.5 py-1.5 outline-none",
+              "text-[length:var(--fs-subtitle-compact,13px)] leading-[var(--lh-subtitle-compact,18px)]",
+              "text-foreground placeholder:text-muted-foreground",
+              fieldTouchClass,
+              textareaClassName
+            )}
+            style={{ fontVariationSettings: fontWeights.normal }}
+          />
+        </div>
         <div className="flex items-center gap-1.5 [&_button]:h-6 [&_button]:text-[length:var(--fs-caption-compact,11px)] [&_button]:leading-[var(--lh-caption-compact,14px)] [&_button.w-7]:w-6">
           {leftSlot}
           {/* ml-auto: the buttons stay right with or without a hint. */}

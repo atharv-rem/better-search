@@ -54,6 +54,13 @@ function webQueryOf(query: string, trigger: string) {
   return query.startsWith(trigger) ? query.slice(trigger.length).trim() : null;
 }
 
+/** "=3*2+4" and "3*2+4=" are calculations; null for anything else. */
+function calcQueryOf(query: string) {
+  if (query.startsWith("=")) return query.slice(1).trim();
+  if (query.trimEnd().endsWith("=")) return query.trimEnd().slice(0, -1).trim();
+  return null;
+}
+
 /** Recent web searches are kept as "/cats" whatever the shortcut is, so
  *  changing it doesn't orphan them. */
 const RECENT_WEB_PREFIX = "/";
@@ -236,6 +243,8 @@ function App() {
   const ready = index.kind === "ready";
   const trigger = settings.web.trigger;
   const webQuery = webQueryOf(query, trigger);
+  // The web search shortcut wins if the user has set it to "=".
+  const calcQuery = webQuery === null ? calcQueryOf(query) : null;
   const rememberRecent = settings.search.remember_recent;
   const recentFiles = useMemo(() => recent.filter((q) => !q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
   const recentWeb = useMemo(() => recent.filter((q) => q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
@@ -257,6 +266,11 @@ function App() {
   const [webState, setWebState] = useState<WebState>({ kind: "idle" });
   const [webActive, setWebActive] = useState<number | null>(null);
   const webSeq = useRef(0);
+  // The answer to the "=" calculation, shown after the text; for the
+  // expression it was for, so typing on hides a stale one.
+  const [calc, setCalc] = useState<{ expr: string; answer: string } | null>(null);
+  const calcSeq = useRef(0);
+  const calcAnswer = calc && calc.expr === calcQuery ? calc.answer : null;
   // Results are for the query they were searched with; typing on hides them.
   const webShown = provider && webState.kind !== "idle" && webState.query === webQuery ? webState : null;
   const webResults = webShown?.kind === "done" ? webShown.results : [];
@@ -407,7 +421,7 @@ function App() {
   // newest request's answer is shown.
   useEffect(() => {
     const seq = ++searchSeq.current;
-    if (!ready || !query.trim() || webQueryOf(query, trigger) !== null) {
+    if (!ready || !query.trim() || webQueryOf(query, trigger) !== null || calcQueryOf(query) !== null) {
       setSearchMs(null);
       setResults([]);
       setActiveIndex(null);
@@ -428,7 +442,36 @@ function App() {
     return () => clearTimeout(timer);
   }, [query, ready, shownAt, maxResults, trigger]);
 
+  // Calculate as you type, without the search's pause: the backend gives up
+  // on anything that takes over 100 ms. Only the newest answer is shown.
+  useEffect(() => {
+    if (!calcQuery) return;
+    const seq = ++calcSeq.current;
+    invoke<string | null>("calculate", { expr: calcQuery })
+      .then((answer) => {
+        if (seq !== calcSeq.current) return;
+        setCalc(answer === null ? null : { expr: calcQuery, answer });
+      })
+      .catch(() => {});
+  }, [calcQuery]);
+
+  /** Enter on a calculation: copies the answer and gets out of the way. */
+  const copyAnswer = () => {
+    if (calcAnswer === null) return;
+    remember(query);
+    navigator.clipboard
+      .writeText(calcAnswer)
+      .then(() => hideWindow())
+      .catch((err) => console.error("Failed to copy:", err));
+  };
+
+  // Windows can take a while to come back from opening a file (a shortcut
+  // that shows a dialog first), and the window is up until it does: one
+  // open at a time, so more Enters don't open it again.
+  const opening = useRef(false);
   const openResult = useCallback(async (r: SearchResult, reveal: boolean) => {
+    if (opening.current) return;
+    opening.current = true;
     remember(queryRef.current);
     // Recorded for ranking without waiting: hiding only trims the backend,
     // which still answers it.
@@ -438,6 +481,8 @@ function App() {
     } catch (err) {
       console.error("Failed to open:", err);
       return;
+    } finally {
+      opening.current = false;
     }
     await hideWindow();
   }, [remember]);
@@ -511,6 +556,12 @@ function App() {
   const handleKeyDownCapture = (e: ReactKeyboardEvent) => {
     // The browser menu renders in a portal, but its keys bubble through here.
     if ((e.target as HTMLElement).closest('[data-slot="dropdown-menu-content"]')) return;
+    // A held Enter repeats; only the first press opens, copies or searches.
+    if (e.key === "Enter" && !e.shiftKey && e.repeat) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (query === "" && e.key !== "Tab") {
       // The recent searches listed under the empty box: ArrowDown enters the
       // list, ArrowUp walks back up and out (with nothing highlighted it
@@ -527,6 +578,15 @@ function App() {
         if (e.key === "ArrowUp") setRecentFilesActive(recentFilesActive === 0 ? null : recentFilesActive - 1);
         else if (e.key === "Enter") runRecentFile(recentFiles[recentFilesActive]);
         else setRecentFilesActive(null);
+      }
+      return;
+    }
+    if (calcQuery !== null) {
+      // No results to move through; Enter copies the answer.
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        copyAnswer();
       }
       return;
     }
@@ -590,6 +650,10 @@ function App() {
   /** Enter, or the bar's arrow button: opens the highlighted result, or runs
    *  the web search. `ctrl` is Ctrl+Enter (or Ctrl+click). */
   const submit = (ctrl: boolean) => {
+    if (calcQuery !== null) {
+      copyAnswer();
+      return;
+    }
     if (webQuery !== null) {
       if (!webQuery) {
         if (showRecentWeb && recentWebActive !== null) runRecentWeb(recentWeb[recentWebActive]);
@@ -667,6 +731,8 @@ function App() {
           maxRows={4}
           value={query}
           onValueChange={setQuery}
+          // "2+3=" already ends in "=": just the answer after it.
+          ghost={calcAnswer === null ? undefined : query.trimEnd().endsWith("=") ? calcAnswer : `= ${calcAnswer}`}
           placeholder="what should i look for you?"
           className="gap-0! bg-black! p-[5px]! text-white"
           style={{ boxShadow: panelShadow }}
