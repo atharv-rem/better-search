@@ -184,19 +184,37 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     Ok(s)
 }
 
-/// Makes `accelerator` open and close the search.
+/// Opens the search in snap mode (snap.rs). Fixed for now; it goes along
+/// whenever the search's shortcut is registered.
+const SNAP_SHORTCUT: &str = "Alt+W";
+
+/// Makes `accelerator` open and close the search, and `SNAP_SHORTCUT` the
+/// snap mode. Only the search's shortcut can fail: without the snap one
+/// (another app has it, or it's the search's own) the app works on.
 pub fn register_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), String> {
     let shortcut = Shortcut::from_str(accelerator).map_err(|e| format!("{accelerator} isn't a shortcut: {e}"))?;
     app.global_shortcut()
         .on_shortcut(shortcut, |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
-                crate::toggle_search(app);
+                crate::toggle_search(app, crate::Mode::Search);
             }
         })
         .map_err(|e| {
             log::warn!("Failed to register {accelerator}: {e}");
             format!("{accelerator} is already used by another app.")
-        })
+        })?;
+    let snap = Shortcut::from_str(SNAP_SHORTCUT).expect("SNAP_SHORTCUT parses");
+    if snap != shortcut {
+        let registered = app.global_shortcut().on_shortcut(snap, |app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                crate::toggle_search(app, crate::Mode::Snap);
+            }
+        });
+        if let Err(e) = registered {
+            log::warn!("Failed to register {SNAP_SHORTCUT}: {e}");
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

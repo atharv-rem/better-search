@@ -14,6 +14,7 @@ mod docx;
 mod logs;
 mod recent;
 mod settings;
+mod snap;
 mod storage;
 mod web_search;
 use settings::SettingsState;
@@ -333,9 +334,24 @@ fn set_bounds(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
     let _ = window.set_size(tauri::PhysicalSize::new(width, height));
 }
 
-fn show_search(window: &WebviewWindow) {
+/// What the search window is open for: searching files (Alt+S), or snapping
+/// open windows into a layout (Alt+W, see snap.rs).
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+enum Mode {
+    #[default]
+    Search,
+    Snap,
+}
+
+/// The mode the search window was last shown in.
+#[derive(Default)]
+struct SearchMode(Mutex<Mode>);
+
+fn show_search(window: &WebviewWindow, mode: Mode) {
     set_webview_low_memory(window, false);
     let app = window.app_handle();
+    *app.state::<SearchMode>().0.lock().unwrap() = mode;
     start_backend(app);
 
     let work_height = place_search(window);
@@ -360,6 +376,7 @@ struct ShownState {
     /// The height of the monitor the window opened on, without the taskbar,
     /// in physical pixels. None when the page should measure it itself.
     work_height: Option<u32>,
+    mode: Mode,
 }
 
 fn shown_state(app: &AppHandle) -> ShownState {
@@ -368,6 +385,7 @@ fn shown_state(app: &AppHandle) -> ShownState {
         browsers: cached_browsers(app),
         pending_update: app.state::<PendingUpdate>().0.lock().unwrap().clone(),
         work_height: None,
+        mode: *app.state::<SearchMode>().0.lock().unwrap(),
     }
 }
 
@@ -395,9 +413,9 @@ fn create_search_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     tauri::WebviewWindowBuilder::from_config(app, &config)?.build()
 }
 
-fn open_search(app: &AppHandle) {
+fn open_search(app: &AppHandle, mode: Mode) {
     if let Some(window) = app.get_webview_window(SEARCH_LABEL) {
-        show_search(&window);
+        show_search(&window, mode);
         return;
     }
     // Building a webview waits on the main thread, which is where shortcut
@@ -405,7 +423,7 @@ fn open_search(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         match create_search_window(&app) {
-            Ok(window) => show_search(&window),
+            Ok(window) => show_search(&window, mode),
             Err(e) => log::error!("Failed to create search window: {e}"),
         }
     });
@@ -421,10 +439,13 @@ fn hide_search(window: &WebviewWindow) {
     set_webview_low_memory(window, true);
 }
 
-fn toggle_search(app: &AppHandle) {
+/// A shortcut closes the window if it's open in that shortcut's mode, and
+/// otherwise opens it, or switches it, to that mode.
+fn toggle_search(app: &AppHandle, mode: Mode) {
+    let current = *app.state::<SearchMode>().0.lock().unwrap();
     match app.get_webview_window(SEARCH_LABEL) {
-        Some(window) if window.is_visible().unwrap_or(false) => hide_search(&window),
-        _ => open_search(app),
+        Some(window) if window.is_visible().unwrap_or(false) && current == mode => hide_search(&window),
+        _ => open_search(app, mode),
     }
 }
 
@@ -1286,6 +1307,7 @@ pub fn run() {
         .manage(PendingUpdate::default())
         .manage(PendingReplies::default())
         .manage(Browsers::default())
+        .manage(SearchMode::default())
         // The app is named "Better Search" (productName, which Task Manager
         // shows); its login entry and log file keep the names they had.
         .plugin(tauri_plugin_autostart::Builder::new().app_name("better-search").build())
@@ -1341,7 +1363,11 @@ pub fn run() {
             web_search::api_usage,
             recent::add_recent_search,
             recent::clear_recent_searches,
-            calc::calculate
+            calc::calculate,
+            snap::open_windows,
+            snap::snap_windows,
+            snap::installed_apps,
+            snap::installed_app_icon
         ])
         .setup(|app| {
             // No window until the first Alt+S ("create": false in tauri.conf.json).

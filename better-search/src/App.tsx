@@ -3,7 +3,7 @@ import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@/lib/phosphor";
+import { ArrowSquareOutIcon, CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@/lib/phosphor";
 import { GlobalSearchIcon } from "@/components/global-search-icon";
 import { RamIcon, TimeIcon } from "@/components/stat-icons";
 import { BrowserIcon, DEFAULT_BROWSER, type BrowserOption } from "@/components/browser-icon";
@@ -19,6 +19,8 @@ import { PreviewPanel } from "@/components/preview-panel";
 import { SearchResults } from "@/components/search-results";
 import { WebResults } from "@/components/web-results";
 import { TypeFilter } from "@/components/type-filter";
+import { SnapHeader, WindowList } from "@/components/snap-picker";
+import { useSnap } from "@/hooks/use-snap";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
 import { cn } from "@/lib/utils";
 import { usePendingUpdate } from "@/lib/update";
@@ -59,6 +61,25 @@ function calcQueryOf(query: string) {
   if (query.startsWith("=")) return query.slice(1).trim();
   if (query.trimEnd().endsWith("=")) return query.trimEnd().slice(0, -1).trim();
   return null;
+}
+
+/** Top-level domains a bare "name.tld" opens as a website for. Only common
+ *  ones that aren't also file extensions: "app.py" and "main.rs" are files. */
+const URL_TLDS = new Set(
+  "com org net io dev app ai co edu gov me in uk us ca de fr jp au xyz tech info so gg tv ly fm to cc site online store blog news page".split(" ")
+);
+
+/** The address to open for a typed URL ("github.com/x", "https://…",
+ *  "localhost:3000"); null for anything else. */
+function urlOf(query: string) {
+  const q = query.trim();
+  if (!q || /\s/.test(q)) return null;
+  if (/^https?:\/\/[^/]/i.test(q)) return q;
+  if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?([/?#]|$)/i.test(q)) return `http://${q}`;
+  const host = /^((?:[a-z0-9-]+\.)+([a-z]{2,}))(:\d+)?([/?#]|$)/i.exec(q);
+  if (!host) return null;
+  if (!/^www\./i.test(host[1]) && !URL_TLDS.has(host[2].toLowerCase())) return null;
+  return `https://${q}`;
 }
 
 /** Recent web searches are kept as "/cats" whatever the shortcut is, so
@@ -150,6 +171,8 @@ interface ShownState {
   /** The monitor's height without the taskbar, in physical pixels; null when
    *  the page should measure it. */
   work_height: number | null;
+  /** Searching files (Alt+S), or snapping windows into a layout (Alt+W). */
+  mode: "search" | "snap";
 }
 
 /** Physical pixels the preview's thumbnails are fitted within. Twice the
@@ -194,6 +217,10 @@ function App() {
   // Null until the page has its first; refreshed on every show.
   const [shown, setShown] = useState<ShownState | null>(null);
   const pendingUpdate = usePendingUpdate(shown?.pending_update ?? null);
+  // Snap mode has its own query (it filters the open windows), so the file
+  // search's is still there when Alt+S switches back.
+  const snapMode = shown?.mode === "snap";
+  const snap = useSnap(snapMode, shownAt);
   const [searchMs, setSearchMs] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -245,6 +272,9 @@ function App() {
   const webQuery = webQueryOf(query, trigger);
   // The web search shortcut wins if the user has set it to "=".
   const calcQuery = webQuery === null ? calcQueryOf(query) : null;
+  // A typed URL opens the site instead of searching files or the web for it,
+  // also after the web search shortcut ("/github.com").
+  const urlQuery = webQuery !== null ? urlOf(webQuery) : calcQuery === null ? urlOf(query) : null;
   const rememberRecent = settings.search.remember_recent;
   const recentFiles = useMemo(() => recent.filter((q) => !q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
   const recentWeb = useMemo(() => recent.filter((q) => q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
@@ -421,7 +451,7 @@ function App() {
   // newest request's answer is shown.
   useEffect(() => {
     const seq = ++searchSeq.current;
-    if (!ready || !query.trim() || webQueryOf(query, trigger) !== null || calcQueryOf(query) !== null) {
+    if (!ready || !query.trim() || webQueryOf(query, trigger) !== null || calcQueryOf(query) !== null || urlOf(query) !== null) {
       setSearchMs(null);
       setResults([]);
       setActiveIndex(null);
@@ -530,7 +560,9 @@ function App() {
     const typed = trigger + q;
     setQuery(typed);
     remember(typed);
-    if (provider) searchProvider(q);
+    const url = urlOf(q);
+    if (url) openUrl(url);
+    else if (provider) searchProvider(q);
     else searchWeb(settings.web, q, browser.id).catch((err) => console.error("Failed to open browser:", err));
   };
 
@@ -540,10 +572,25 @@ function App() {
     searchRef.current?.querySelector("textarea")?.focus();
   };
 
-  const openWebResult = (r: WebResult) =>
-    invoke("open_url", { url: r.url, browser: browser.id })
+  const openUrl = (url: string) =>
+    invoke("open_url", { url, browser: browser.id })
       .then(() => hideWindow())
       .catch((err) => console.error("Failed to open browser:", err));
+  const openWebResult = (r: WebResult) => openUrl(r.url);
+
+  /** Enter on a typed URL: opens the site in the chosen browser. */
+  const openTypedUrl = () => {
+    if (urlQuery === null) return;
+    remember(query);
+    openUrl(urlQuery);
+  };
+
+  /** Tab in the web-search or URL row: the next browser; Shift+Tab goes back. */
+  const cycleBrowser = (back: boolean) => {
+    const at = browsers.findIndex((b) => b.id === browser.id);
+    const step = back ? -1 : 1;
+    chooseBrowser(browsers[(at + step + browsers.length) % browsers.length].id);
+  };
 
   const chooseBrowser = (id: string) => {
     setSavedBrowser(id);
@@ -556,6 +603,13 @@ function App() {
   const handleKeyDownCapture = (e: ReactKeyboardEvent) => {
     // The browser menu renders in a portal, but its keys bubble through here.
     if ((e.target as HTMLElement).closest('[data-slot="dropdown-menu-content"]')) return;
+    if (snapMode) {
+      if (snap.handleKey(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
     // A held Enter repeats; only the first press opens, copies or searches.
     if (e.key === "Enter" && !e.shiftKey && e.repeat) {
       e.preventDefault();
@@ -590,14 +644,22 @@ function App() {
       }
       return;
     }
+    if (urlQuery !== null) {
+      // Tab cycles the browser to open it in; Enter opens it.
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Tab") cycleBrowser(e.shiftKey);
+        else openTypedUrl();
+      }
+      return;
+    }
     if (webQuery !== null) {
       if (e.key === "Tab") {
         // Cycle the browser to search in; Shift+Tab goes back.
         e.preventDefault();
         e.stopPropagation();
-        const at = browsers.findIndex((b) => b.id === browser.id);
-        const step = e.shiftKey ? -1 : 1;
-        chooseBrowser(browsers[(at + step + browsers.length) % browsers.length].id);
+        cycleBrowser(e.shiftKey);
       } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && showRecentWeb) {
         // Like the empty box's list: ArrowDown enters and walks down,
         // ArrowUp walks back up and out.
@@ -654,6 +716,10 @@ function App() {
       copyAnswer();
       return;
     }
+    if (urlQuery !== null) {
+      openTypedUrl();
+      return;
+    }
     if (webQuery !== null) {
       if (!webQuery) {
         if (showRecentWeb && recentWebActive !== null) runRecentWeb(recentWeb[recentWebActive]);
@@ -684,7 +750,46 @@ function App() {
   }, []);
 
   const showResults = ready && results.length > 0;
-  const showPanel = webQuery !== null || showResults || showRecentFiles || (index.kind !== "ready" && index.kind !== "checking");
+  const showPanel = webQuery !== null || urlQuery !== null || showResults || showRecentFiles || (index.kind !== "ready" && index.kind !== "checking");
+
+  // Picks the browser at the end of the web-search and URL rows.
+  const browserMenu = (
+    <DropdownMenu onOpenChange={setBrowserMenuOpen}>
+      <DropdownMenuTrigger
+        className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1 text-[12px] leading-4 text-white outline-hidden transition-colors hover:bg-white/10 focus-visible:bg-white/10 data-[state=open]:bg-white/10"
+        aria-label="Browser to open in"
+      >
+        <BrowserIcon browser={browser} size={ROW_ICON_SIZE} />
+        <span className="max-w-28 truncate">{browser.name}</span>
+        <CaretDownIcon size={ROW_ICON_SIZE} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="bottom"
+        align="end"
+        // The window is only as tall as the frame (see the spacer
+        // below), so don't let the menu flip up while it catches up.
+        avoidCollisions={false}
+        className="dark border-white/10 bg-zinc-950 text-white"
+        // Hand focus back to the search box, not the trigger.
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          searchRef.current?.querySelector("textarea")?.focus();
+        }}
+      >
+        {browsers.map((b) => (
+          <DropdownMenuItem
+            key={b.id}
+            className="gap-2 py-1 text-[12px] leading-4 text-white focus:text-white"
+            onSelect={() => chooseBrowser(b.id)}
+          >
+            <BrowserIcon browser={b} size={ROW_ICON_SIZE} />
+            <span className="truncate">{b.name}</span>
+            {b.id === browser.id && <CheckIcon size={ROW_ICON_SIZE} className="ml-auto shrink-0" />}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
   return (
     // The window is sized to this frame (see the resize effect), not the
@@ -694,6 +799,9 @@ function App() {
         {/* The row above the bar: the preview on the left, the stat pills on
             the right. Both sit on the row's bottom, so the pills stay just
             above the bar whether the preview is there or not. */}
+        {snapMode ? (
+          <SnapHeader snap={snap} />
+        ) : (
         <div className="mb-2 flex items-end justify-between gap-2">
           {showResults && visible.length > 0 && showPreview && (
             // Its space is kept for as long as there are results (the square
@@ -726,22 +834,29 @@ function App() {
             </span>
           </div>
         </div>
+        )}
         <SearchBox
           ref={searchRef}
           maxRows={4}
-          value={query}
-          onValueChange={setQuery}
+          value={snapMode ? snap.query : query}
+          onValueChange={snapMode ? snap.setQuery : setQuery}
           // "2+3=" already ends in "=": just the answer after it.
-          ghost={calcAnswer === null ? undefined : query.trimEnd().endsWith("=") ? calcAnswer : `= ${calcAnswer}`}
-          placeholder="what should i look for you?"
+          ghost={snapMode || calcAnswer === null ? undefined : query.trimEnd().endsWith("=") ? calcAnswer : `= ${calcAnswer}`}
+          placeholder={snapMode ? "find an open window or an app" : "what should i look for you?"}
           className="gap-0! bg-black! p-[5px]! text-white"
           style={{ boxShadow: panelShadow }}
           textareaClassName="placeholder:text-zinc-400!"
           leftSlot={
-            <span className="ml-1 flex h-4 items-center gap-0.5 rounded-[5px] bg-[#2a0b0b] px-1 text-[9px] leading-3 text-red-200/80 ring-1 ring-red-500/20">
-              <span className="font-semibold text-red-300">{trigger}</span>
-              to search the web
-            </span>
+            snapMode ? (
+              <span className="ml-1 flex h-4 items-center rounded-[5px] bg-sky-950 px-1 text-[9px] leading-3 text-sky-200/80 ring-1 ring-sky-500/20">
+                Snap windows
+              </span>
+            ) : (
+              <span className="ml-1 flex h-4 items-center gap-0.5 rounded-[5px] bg-[#2a0b0b] px-1 text-[9px] leading-3 text-red-200/80 ring-1 ring-red-500/20">
+                <span className="font-semibold text-red-300">{trigger}</span>
+                to search the web
+              </span>
+            )
           }
           rightSlot={
             <Button
@@ -759,7 +874,13 @@ function App() {
           }
         />
 
-        {showResults && groups.length > 1 && (
+        {snapMode && (
+          <div className="mt-2 origin-top overflow-hidden rounded-xl bg-black text-white" style={{ boxShadow: panelShadow }}>
+            <WindowList snap={snap} maxHeight={resultsMaxHeight(screenHeight)} />
+          </div>
+        )}
+
+        {!snapMode && showResults && groups.length > 1 && (
           <TypeFilter
             groups={groups}
             total={results.length}
@@ -771,7 +892,7 @@ function App() {
           />
         )}
 
-        {showPanel && (
+        {!snapMode && showPanel && (
           // Below the bar; the window grows downwards, so the bar never moves.
           <div
             // Rises in when it first appears (results, the web search row or
@@ -779,7 +900,19 @@ function App() {
             className="mt-2 origin-top overflow-hidden rounded-xl bg-black text-white motion-safe:animate-rise-in"
             style={{ boxShadow: panelShadow }}
           >
-            {webQuery !== null ? (
+            {urlQuery !== null ? (
+              <div className="flex items-center gap-2 pr-2">
+                <button
+                  type="button"
+                  onClick={openTypedUrl}
+                  className="flex min-w-0 flex-1 items-center gap-2 p-3 pr-0 text-left text-[12px] leading-4"
+                >
+                  <ArrowSquareOutIcon size={ROW_ICON_SIZE} className="shrink-0" />
+                  <span className="truncate">Open {webQuery ?? query.trim()}</span>
+                </button>
+                {browserMenu}
+              </div>
+            ) : webQuery !== null ? (
               <>
                 <div className="flex items-center gap-2 pr-2">
                   <button
@@ -801,41 +934,7 @@ function App() {
                           : `Search the web for “${webQuery}”`}
                     </span>
                   </button>
-                  <DropdownMenu onOpenChange={setBrowserMenuOpen}>
-                    <DropdownMenuTrigger
-                      className="flex shrink-0 items-center gap-2 rounded-md px-2 py-1 text-[12px] leading-4 text-white outline-hidden transition-colors hover:bg-white/10 focus-visible:bg-white/10 data-[state=open]:bg-white/10"
-                      aria-label="Browser to search in"
-                    >
-                      <BrowserIcon browser={browser} size={ROW_ICON_SIZE} />
-                      <span className="max-w-28 truncate">{browser.name}</span>
-                      <CaretDownIcon size={ROW_ICON_SIZE} />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      side="bottom"
-                      align="end"
-                      // The window is only as tall as the frame (see the spacer
-                      // below), so don't let the menu flip up while it catches up.
-                      avoidCollisions={false}
-                      className="dark border-white/10 bg-zinc-950 text-white"
-                      // Hand focus back to the search box, not the trigger.
-                      onCloseAutoFocus={(e) => {
-                        e.preventDefault();
-                        searchRef.current?.querySelector("textarea")?.focus();
-                      }}
-                    >
-                      {browsers.map((b) => (
-                        <DropdownMenuItem
-                          key={b.id}
-                          className="gap-2 py-1 text-[12px] leading-4 text-white focus:text-white"
-                          onSelect={() => chooseBrowser(b.id)}
-                        >
-                          <BrowserIcon browser={b} size={ROW_ICON_SIZE} />
-                          <span className="truncate">{b.name}</span>
-                          {b.id === browser.id && <CheckIcon size={ROW_ICON_SIZE} className="ml-auto shrink-0" />}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {browserMenu}
                 </div>
                 {showRecentWeb && (
                   <RecentSearches
@@ -899,7 +998,7 @@ function App() {
         )}
         {/* The menu opens below the bar, outside the frame; the window only
             covers the frame, so make room for it while it's open. */}
-        {browserMenuOpen && webQuery !== null && <div style={{ height: browsers.length * BROWSER_ITEM_HEIGHT }} />}
+        {browserMenuOpen && (webQuery !== null || urlQuery !== null) && <div style={{ height: browsers.length * BROWSER_ITEM_HEIGHT }} />}
       </div>
     </div>
   );

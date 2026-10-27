@@ -102,8 +102,8 @@ func TestRankByKind(t *testing.T) {
 		{ID: 43, ParentID: 5, Name: "SpotifyLauncher.exe"},
 		{ID: 44, ParentID: 5, Name: "Spotify.exe"},
 	})
-	// Exact file, then apps, then folders and shortcuts, then other files.
-	want := []string{"Spotify.exe", "SpotifyLauncher.exe", "Spotify", "Spotify.lnk", "spotify_cache.dat"}
+	// Exact file and shortcuts, then apps, then folders, then other files.
+	want := []string{"Spotify.exe", "Spotify.lnk", "SpotifyLauncher.exe", "Spotify", "spotify_cache.dat"}
 	got := names(t, db, "spotify")
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)

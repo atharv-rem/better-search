@@ -64,5 +64,5 @@ func Search(ctx context.Context, db *database.DB, query string, limit int) ([]Re
 			OpenCount:  f.OpenCount,
 		})
 	}
-	return results, nil
+	return preferShortcuts(results, query), nil
 }

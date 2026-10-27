@@ -106,6 +106,7 @@ var DefaultExcludedPaths = []string{
 	`Users\*\AppData\Local\Packages`,
 	`Users\*\AppData\Local\Temp`,
 	`Users\*\AppData\Local\SquirrelTemp`,
+	`Users\*\AppData\Roaming\Microsoft\Windows\Recent`, // shortcuts to recently opened files, not the files
 	`Users\*\AppData\Roaming\zen\Profiles\*\storage`,
 	`Users\*\AppData\Roaming\Mozilla\Firefox\Profiles\*\storage`,
 	`Users\*\AppData\Roaming\*\User\History`, // VS Code-style editors' local history

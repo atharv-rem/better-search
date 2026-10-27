@@ -142,7 +142,7 @@ function ResultRow({ result, index, active, registerItem, onOpen }: ResultRowPro
           className={cn("truncate text-[12px] leading-4 transition-colors duration-80", active ? "text-white" : "text-zinc-200")}
           style={{ fontVariationSettings: fontWeights.semibold }}
         >
-          {result.name}
+          {result.name.replace(/\.lnk$/i, "")}
         </span>
         <span className="truncate text-[10px] leading-3 text-zinc-500">{parentOf(result.path)}</span>
       </div>
