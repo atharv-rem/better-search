@@ -1,6 +1,6 @@
 [package]
 name = "better-search"
-version = "0.3.1"
+version = "0.4.0"
 description = "Fast file search for Windows"
 authors = ["Atharv Remeshan"]
 edition = "2021"
