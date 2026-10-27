@@ -1,8 +1,10 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -44,9 +46,8 @@ ORDER BY CASE
 // 3 characters, so shorter terms filter the matches with LIKE. When every
 // term is short, names must start with the first one: a substring scan of
 // every name takes ~0.5 s on a million files, a prefix lookup is instant.
-func (d *DB) SearchNames(query string, terms []string, limit int) ([]File, error) {
-	d.RefreshTree()
-
+// Cancelling ctx stops the query where it is.
+func (d *DB) SearchNames(ctx context.Context, query string, terms []string, limit int) ([]File, error) {
 	var long, short []string
 	for _, t := range terms {
 		if utf8.RuneCountInString(t) >= 3 {
@@ -84,7 +85,7 @@ func (d *DB) SearchNames(query string, terms []string, limit int) ([]File, error
 	args = append(args, exact...)
 	args = append(args, esc+"%", "% "+esc+"%", "%."+esc+"%", `%\_`+esc+"%", "%-"+esc+"%", limit)
 
-	rows, err := d.sql.Query(q.String(), args...)
+	rows, err := d.sql.QueryContext(ctx, q.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
 	}
@@ -132,61 +133,98 @@ func (d *DB) MarkOpened(id int64) error {
 
 // Path builds the full path of a file, e.g. C:\Users\atharv\resume.pdf.
 func (d *DB) Path(f File) (string, error) {
-	if f.ParentID == 0 {
-		return f.Name + `\`, nil
-	}
-	dir, err := d.dirPath(f.ParentID, 0)
+	paths, err := d.Paths(context.Background(), []File{f})
 	if err != nil {
 		return "", err
 	}
-	return joinPath(dir, f.Name), nil
+	if paths[0] == "" {
+		return "", fmt.Errorf("%s: its folders don't lead to a drive", f.Name)
+	}
+	return paths[0], nil
 }
 
-// A search needs at most one folder per result, so this covers many searches
-// without holding a large part of the tree.
-const maxDirCache = 20_000
+// ancestorsSQL reads every folder above the ids in a JSON array, in one go.
+// UNION (not UNION ALL) drops rows it has already seen, so a loop of parent
+// ids, which only a damaged index has, ends the walk instead of repeating.
+const ancestorsSQL = `WITH RECURSIVE dirs (id, parent_id, name) AS (
+	SELECT id, parent_id, name FROM files WHERE id IN (SELECT value FROM json_each(?))
+	UNION
+	SELECT f.id, f.parent_id, f.name FROM files f JOIN dirs ON f.id = dirs.parent_id)
+SELECT id, parent_id, name FROM dirs`
 
-func (d *DB) dirPath(id int64, depth int) (string, error) {
-	if depth > 1024 {
-		return "", fmt.Errorf("folder %d: parent chain too deep (loop?)", id)
-	}
-
-	d.dirMu.Lock()
-	p, ok := d.dirCache[id]
-	d.dirMu.Unlock()
-	if ok {
-		return p, nil
-	}
-
-	var parent sql.NullInt64
-	var name string
-	if err := d.sql.QueryRow(`SELECT parent_id, name FROM files WHERE id = ?`, id).Scan(&parent, &name); err != nil {
-		return "", fmt.Errorf("folder %d: %w", id, err)
-	}
-	if !parent.Valid {
-		p = name + `\`
-	} else {
-		dir, err := d.dirPath(parent.Int64, depth+1)
-		if err != nil {
-			return "", err
+// Paths builds the full path of each file, from one query for all their
+// folders: a search's results share most of them. A file whose folders don't
+// lead up to a drive root (a row missing, or a loop) gets "".
+func (d *DB) Paths(ctx context.Context, files []File) ([]string, error) {
+	ids := []byte{'['}
+	for _, f := range files {
+		if f.ParentID != 0 {
+			if len(ids) > 1 {
+				ids = append(ids, ',')
+			}
+			ids = strconv.AppendInt(ids, f.ParentID, 10)
 		}
-		p = joinPath(dir, name)
+	}
+	ids = append(ids, ']')
+
+	s, err := d.prepared(ancestorsSQL)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.QueryContext(ctx, string(ids))
+	if err != nil {
+		return nil, fmt.Errorf("folders: %w", err)
+	}
+	defer rows.Close()
+	type dir struct {
+		parent sql.NullInt64
+		name   string
+	}
+	dirs := map[int64]dir{}
+	for rows.Next() {
+		var id int64
+		var r dir
+		if err := rows.Scan(&id, &r.parent, &r.name); err != nil {
+			return nil, err
+		}
+		dirs[id] = r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	d.dirMu.Lock()
-	if len(d.dirCache) >= maxDirCache {
-		d.dirCache = make(map[int64]string)
+	// Folder id -> full path, "" for one that doesn't reach a root.
+	built := map[int64]string{}
+	var dirPath func(id int64) string
+	dirPath = func(id int64) string {
+		if p, ok := built[id]; ok {
+			return p
+		}
+		built[id] = "" // until it's known: a loop back to here fails
+		r, ok := dirs[id]
+		var p string
+		switch {
+		case !ok:
+		case !r.parent.Valid:
+			p = r.name + `\`
+		default:
+			if parent := dirPath(r.parent.Int64); parent != "" {
+				p = joinPath(parent, r.name)
+			}
+		}
+		built[id] = p
+		return p
 	}
-	d.dirCache[id] = p
-	d.dirMu.Unlock()
-	return p, nil
-}
 
-// ClearCache forgets cached folder paths, e.g. after another process rebuilt the index.
-func (d *DB) ClearCache() {
-	d.dirMu.Lock()
-	d.dirCache = make(map[int64]string)
-	d.dirMu.Unlock()
+	out := make([]string, len(files))
+	for i, f := range files {
+		if f.ParentID == 0 {
+			out[i] = f.Name + `\`
+		} else if dir := dirPath(f.ParentID); dir != "" {
+			out[i] = joinPath(dir, f.Name)
+		}
+	}
+	return out, nil
 }
 
 func joinPath(dir, name string) string {

@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS files (
 -- Finds a file from its path one folder at a time, and stops duplicates.
 CREATE UNIQUE INDEX IF NOT EXISTS files_parent_name ON files (parent_id, name);
 
+-- A folder's subfolders, for the catch-up walk: without it, listing them reads
+-- every file row in the folder too. Holds folder rows only.
+CREATE INDEX IF NOT EXISTS files_child_dirs ON files (parent_id, name, modified_at) WHERE is_dir = 1;
+
 -- Prefix search for 1-2 character queries, which the trigram index can't answer.
 CREATE INDEX IF NOT EXISTS files_name_nocase ON files (name COLLATE NOCASE);
 

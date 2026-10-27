@@ -18,7 +18,9 @@ fn path(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|dir| dir.join("recent.json"))
 }
 
-fn read(app: &AppHandle) -> Vec<String> {
+/// Newest first. The search page gets them with every show (lib.rs
+/// `ShownState`).
+pub fn read(app: &AppHandle) -> Vec<String> {
     path(app)
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -33,12 +35,6 @@ pub fn clear(app: &AppHandle) -> Result<(), String> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
         _ => Ok(()),
     }
-}
-
-/// Newest first.
-#[tauri::command]
-pub fn recent_searches(app: AppHandle) -> Vec<String> {
-    read(&app)
 }
 
 /// Puts `query` first (once) and gives the new list.

@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"strings"
 
 	"better-search/backend/internal/database"
@@ -22,8 +23,8 @@ type Result struct {
 }
 
 // Search returns files whose names contain every space-separated word in
-// query, best matches first.
-func Search(db *database.DB, query string, limit int) ([]Result, error) {
+// query, best matches first. Cancelling ctx stops it, with ctx's error.
+func Search(ctx context.Context, db *database.DB, query string, limit int) ([]Result, error) {
 	query = strings.TrimSpace(query)
 	terms := strings.Fields(query)
 	if len(terms) == 0 {
@@ -34,16 +35,20 @@ func Search(db *database.DB, query string, limit int) ([]Result, error) {
 	}
 	limit = min(limit, maxLimit)
 
-	files, err := db.SearchNames(query, terms, limit)
+	files, err := db.SearchNames(ctx, query, terms, limit)
+	if err != nil {
+		return nil, err
+	}
+	paths, err := db.Paths(ctx, files)
 	if err != nil {
 		return nil, err
 	}
 
 	results := make([]Result, 0, len(files))
-	for _, f := range files {
-		path, err := db.Path(f)
-		if err != nil {
-			continue // parent row missing; skip rather than show a wrong path
+	for i, f := range files {
+		path := paths[i]
+		if path == "" {
+			continue // its folders are missing; skip rather than show a wrong path
 		}
 		typ := "file"
 		if f.IsDir {

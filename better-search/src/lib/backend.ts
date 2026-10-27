@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-// Client for the Go sidecar. Requests go out as JSON lines via the
-// `backend_send` command; every stdout line comes back as a
-// `backend-message` event. Replies carry the request's id, events don't.
+// Client for the Go sidecar. Each request goes out as a JSON line through the
+// `backend_request` command, which resolves with the reply to it. Events,
+// which answer no request (indexing progress), come as `backend-message`.
 
 export interface SearchResult {
   id: number;
@@ -62,10 +62,10 @@ export class BackendError extends Error {
   }
 }
 
-const pending = new Map<string, { resolve: (m: Message) => void; reject: (e: Error) => void }>();
 const eventListeners = new Set<(e: BackendEvent) => void>();
 let nextId = 1;
-// Every window gets every reply, so ids must not clash between windows.
+// Rust matches replies to requests by id across every window, so ids must
+// not clash between windows.
 const idPrefix = Math.random().toString(36).slice(2, 8);
 
 listen<string>("backend-message", ({ payload }) => {
@@ -77,14 +77,6 @@ listen<string>("backend-message", ({ payload }) => {
     return;
   }
 
-  if (msg.id && pending.has(msg.id)) {
-    const p = pending.get(msg.id)!;
-    pending.delete(msg.id);
-    if (msg.status === "ok") p.resolve(msg);
-    else p.reject(new BackendError(msg.error ?? "backend error", msg.code));
-    return;
-  }
-
   let event: BackendEvent | null = null;
   if (msg.type === "index_progress") event = { type: msg.type, progress: msg.data as IndexProgress };
   else if (msg.type === "index_done") event = { type: msg.type, stats: (msg.data as DriveStats[]) ?? [] };
@@ -92,23 +84,18 @@ listen<string>("backend-message", ({ payload }) => {
   if (event) eventListeners.forEach((fn) => fn(event));
 });
 
-// The sidecar exited (it crashed, or the app is quitting): nothing in flight
-// will be answered.
-listen("backend-stopped", () => {
-  for (const p of pending.values()) p.reject(new BackendError("backend stopped"));
-  pending.clear();
-});
-
+/** Rejects if the sidecar isn't running or stops before answering, or with
+ *  its error. A search rejects with code "superseded" once a newer one starts. */
 async function request(type: string, fields: Record<string, unknown> = {}): Promise<Message> {
   const id = `${idPrefix}-${nextId++}`;
-  const reply = new Promise<Message>((resolve, reject) => pending.set(id, { resolve, reject }));
+  let msg: Message;
   try {
-    await invoke("backend_send", { message: JSON.stringify({ id, type, ...fields }) });
+    msg = await invoke<Message>("backend_request", { id, message: JSON.stringify({ id, type, ...fields }) });
   } catch (e) {
-    pending.delete(id);
     throw new BackendError(String(e));
   }
-  return reply;
+  if (msg.status !== "ok") throw new BackendError(msg.error ?? "backend error", msg.code);
+  return msg;
 }
 
 export const backend = {

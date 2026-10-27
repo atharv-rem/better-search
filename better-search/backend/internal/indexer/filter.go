@@ -3,6 +3,7 @@ package indexer
 import (
 	"os"
 	"strings"
+	"time"
 )
 
 // FixedDrives lists the fixed drives, like "C:".
@@ -34,7 +35,7 @@ func (ix *Indexer) Excluded(path string, isDir bool) bool {
 		if ix.excluded[lower] {
 			return true
 		}
-		if lower == "target" && hasCargoToml(path[:2]+`\`+strings.Join(parts[:i], `\`)) {
+		if lower == "target" && ix.hasCargoToml(path[:2]+`\`+strings.Join(parts[:i], `\`)) {
 			return true
 		}
 		var excluded bool
@@ -45,7 +46,32 @@ func (ix *Indexer) Excluded(path string, isDir bool) bool {
 	return false
 }
 
-func hasCargoToml(dir string) bool {
-	_, err := os.Stat(strings.TrimRight(dir, `\`) + `\Cargo.toml`)
+// How long hasCargoToml trusts what it last saw in a folder, and how many
+// folders it remembers.
+const (
+	cargoTTL   = time.Minute
+	cargoLimit = 1000
+)
+
+type cargoSeen struct {
+	has bool
+	at  time.Time
+}
+
+// hasCargoToml reports whether dir holds a Cargo.toml. A build writes
+// thousands of files into target, and each change is checked here, so the
+// answer is remembered for a while rather than looked up on disk every time.
+func (ix *Indexer) hasCargoToml(dir string) bool {
+	key := strings.ToLower(strings.TrimRight(dir, `\`))
+	ix.cargoMu.Lock()
+	defer ix.cargoMu.Unlock()
+	if seen, ok := ix.cargo[key]; ok && time.Since(seen.at) < cargoTTL {
+		return seen.has
+	}
+	_, err := os.Stat(key + `\Cargo.toml`)
+	if ix.cargo == nil || len(ix.cargo) >= cargoLimit {
+		ix.cargo = map[string]cargoSeen{}
+	}
+	ix.cargo[key] = cargoSeen{has: err == nil, at: time.Now()}
 	return err == nil
 }

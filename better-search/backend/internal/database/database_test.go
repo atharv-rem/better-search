@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -45,7 +46,7 @@ func names(t *testing.T, db *DB, q string, terms ...string) []string {
 	if terms == nil {
 		terms = []string{q}
 	}
-	files, err := db.SearchNames(q, terms, 10)
+	files, err := db.SearchNames(context.Background(), q, terms, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestBulkDropsDuplicateNames(t *testing.T) {
 	db := openTest(t)
 	load(t, db, append(append([]File{}, tree...), File{ID: 40, ParentID: 21, Name: "Resume.pdf", Size: 9}))
 
-	got, err := db.SearchNames("resume.pdf", []string{"resume.pdf"}, 10)
+	got, err := db.SearchNames(context.Background(), "resume.pdf", []string{"resume.pdf"}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestBulkDropsDuplicateNames(t *testing.T) {
 		t.Fatalf("want only the first Resume.pdf (30), got %+v", got)
 	}
 	var indexes int
-	if err := db.sql.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN ('files_parent_name', 'files_name_nocase')`).Scan(&indexes); err != nil || indexes != 2 {
+	if err := db.sql.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN ('files_parent_name', 'files_name_nocase', 'files_child_dirs')`).Scan(&indexes); err != nil || indexes != 3 {
 		t.Fatalf("indexes after a full index: %d %v", indexes, err)
 	}
 }

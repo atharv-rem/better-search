@@ -82,10 +82,9 @@ func connCacheUsed(driverConn any) (int64, error) {
 }
 
 // Trim frees what the index holds in memory while the app is idle: the idle
-// connection's page cache and the cached folder paths. Both refill from the
-// memory-mapped file on the next search.
+// connection's page cache, which refills from the memory-mapped file on the
+// next search.
 func (d *DB) Trim() {
 	d.sql.SetMaxIdleConns(0) // closes the idle connection
 	d.sql.SetMaxIdleConns(1)
-	d.ClearCache()
 }

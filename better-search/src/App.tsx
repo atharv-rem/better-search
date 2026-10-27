@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { CaretDownIcon, CheckIcon, ClockCounterClockwiseIcon, GearSixIcon } from "@/lib/phosphor";
 import { GlobalSearchIcon } from "@/components/global-search-icon";
 import { RamIcon, TimeIcon } from "@/components/stat-icons";
-import { BrowserIcon, DEFAULT_BROWSER, useInstalledBrowsers } from "@/components/browser-icon";
+import { BrowserIcon, DEFAULT_BROWSER, type BrowserOption } from "@/components/browser-icon";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -119,16 +119,30 @@ function barScreenTop(screenHeight: number) {
 /** The height of the screen the window is on, without the taskbar, in the
  *  page's CSS pixels. `screen.availHeight` would do but for the interface
  *  size: WebView2 doesn't scale it by the zoom, so it's read from the monitor
- *  and measured again with `measure` when the zoom or the monitor changes. */
+ *  and measured again with `measure` when the zoom or the monitor changes, or
+ *  given in physical pixels with `setPhysical` when Rust already knows it. */
 function useScreenHeight() {
   const [height, setHeight] = useState(screen.availHeight);
+  const setPhysical = useCallback((physical: number) => setHeight(physical / window.devicePixelRatio), []);
   const measure = useCallback(() => {
     currentMonitor()
-      .then((m) => m && setHeight(m.workArea.size.height / window.devicePixelRatio))
+      .then((m) => m && setPhysical(m.workArea.size.height))
       .catch(() => {});
-  }, []);
+  }, [setPhysical]);
   useEffect(measure, [measure]);
-  return [height, measure] as const;
+  return [height, measure, setPhysical] as const;
+}
+
+/** What Rust sends with every show, and gives once when the page loads
+ *  (lib.rs `ShownState`). */
+interface ShownState {
+  /** Newest first. */
+  recent: string[];
+  browsers: BrowserOption[];
+  pending_update: string | null;
+  /** The monitor's height without the taskbar, in physical pixels; null when
+   *  the page should measure it. */
+  work_height: number | null;
 }
 
 /** Physical pixels the preview's thumbnails are fitted within. Twice the
@@ -170,7 +184,9 @@ function useMemoryUsage(shownAt: number) {
 function App() {
   const [shownAt, setShownAt] = useState(0); // bumps on every Alt+S
   const memoryMb = useMemoryUsage(shownAt);
-  const pendingUpdate = usePendingUpdate(shownAt);
+  // Null until the page has its first; refreshed on every show.
+  const [shown, setShown] = useState<ShownState | null>(null);
+  const pendingUpdate = usePendingUpdate(shown?.pending_update ?? null);
   const [searchMs, setSearchMs] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -182,14 +198,10 @@ function App() {
   settingsRef.current = settings;
   const queryRef = useRef(query);
   queryRef.current = query;
-  // Newest first; read again on every show (the settings page may have
-  // cleared them).
+  // Newest first; as of the last show (the settings page may have cleared
+  // them), plus what this page has added since.
   const [recent, setRecent] = useState<string[]>([]);
-  useEffect(() => {
-    invoke<string[]>("recent_searches")
-      .then(setRecent)
-      .catch(() => {});
-  }, [shownAt]);
+  useEffect(() => setRecent(shown?.recent ?? []), [shown]);
 
   /** Keeps `text` as a recent search: called once something came of it. */
   const remember = useCallback((text: string) => {
@@ -204,7 +216,7 @@ function App() {
     invoke("add_recent_search", { query: t }).catch(() => {});
   }, []);
   const { max_results: maxResults, enter_reveals: enterReveals, show_preview: showPreview } = settings.search;
-  const browsers = useInstalledBrowsers(shownAt);
+  const browsers = useMemo(() => [DEFAULT_BROWSER, ...(shown?.browsers ?? [])], [shown]);
   // Local too, so Tab can cycle faster than the save comes back.
   const [savedBrowser, setSavedBrowser] = useState(settings.web.browser);
   useEffect(() => setSavedBrowser(settings.web.browser), [settings.web.browser]);
@@ -213,7 +225,7 @@ function App() {
   const browser = browsers.find((b) => b.id === savedBrowser) ?? DEFAULT_BROWSER;
   const searchRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
-  const [screenHeight, measureScreen] = useScreenHeight();
+  const [screenHeight, measureScreen, setScreenHeight] = useScreenHeight();
   const screenHeightRef = useRef(screenHeight);
   screenHeightRef.current = screenHeight;
   const fitRef = useRef<(recenter?: boolean) => void>(() => {});
@@ -338,11 +350,16 @@ function App() {
     // When the window is destroyed on close, each Alt+S loads a fresh page
     // that missed "search-shown": the page loading *is* the window showing.
     setShownAt(Date.now());
+    invoke<ShownState>("search_state")
+      .then(setShown)
+      .catch(() => {});
 
-    const unlistenShown = listen("search-shown", () => {
+    const unlistenShown = listen<ShownState>("search-shown", ({ payload }) => {
       focusSearch();
+      setShown(payload);
       // Opened on the monitor the mouse is on, which may be another one.
-      measureScreen();
+      if (payload.work_height) setScreenHeight(payload.work_height);
+      else measureScreen();
       // A hidden window comes back with the last query: select it so typing
       // starts a new search, or clear it if the settings say so.
       if (settingsRef.current.search.clear_on_close) setQuery("");

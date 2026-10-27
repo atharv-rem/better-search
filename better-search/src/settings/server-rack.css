@@ -100,7 +100,8 @@
   animation-name: rk-breathe-glow;
 }
 
-/* Window hidden or unfocused: freeze every animation so nothing repaints. */
+/* Not pointed at, or the window hidden or unfocused: freeze every animation
+   so nothing repaints. */
 .rack[data-paused] * {
   animation-play-state: paused !important;
 }

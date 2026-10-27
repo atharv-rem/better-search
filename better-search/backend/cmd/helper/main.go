@@ -30,6 +30,9 @@ func main() {
 	dbPath := flag.String("db", database.DefaultPath(), "path to the SQLite index")
 	settingsPath := flag.String("settings", "", "the app's settings.json, for the user's indexing exclusions")
 	flag.Parse()
+	// The app timestamps each line, and reads a leading "ERROR: " or "WARN: "
+	// as its level.
+	log.SetFlags(0)
 
 	// Runs for as long as the app, idle most of the time: collect garbage
 	// sooner, so the heap stays small between searches.
@@ -39,7 +42,7 @@ func main() {
 
 	db, err := database.Open(*dbPath)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		log.Fatalf("ERROR: Failed to open database: %v", err)
 	}
 	defer db.Close()
 	log.Printf("Using index at %s", *dbPath)
@@ -58,6 +61,29 @@ func main() {
 	}()
 
 	var indexing atomic.Bool
+
+	// Typing sends a search per pause, and only the newest one's results are
+	// shown: each new search cancels the one before, which stops mid-query
+	// rather than queueing the new one behind it. Called from the request loop
+	// only, so cancelSearch needs no lock.
+	cancelSearch := context.CancelFunc(func() {})
+	startSearch := func(req ipc.Request) {
+		cancelSearch()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelSearch = cancel
+		go func() {
+			defer cancel()
+			results, err := search.Search(ctx, db, req.Query, req.Limit)
+			switch {
+			case ctx.Err() != nil:
+				out.ErrorCode(req.ID, req.Type, ipc.CodeSuperseded, "a newer search replaced this one")
+			case err != nil:
+				out.Error(req.ID, req.Type, err.Error())
+			default:
+				out.OK(req.ID, req.Type, results, nil)
+			}
+		}()
+	}
 
 	log.Println("Waiting for queries on Stdin...")
 
@@ -81,12 +107,7 @@ func main() {
 
 		switch req.Type {
 		case ipc.TypeSearch:
-			results, err := search.Search(db, req.Query, req.Limit)
-			if err != nil {
-				out.Error(req.ID, req.Type, err.Error())
-				continue
-			}
-			out.OK(req.ID, req.Type, results, nil)
+			startSearch(req)
 
 		case ipc.TypeOpen:
 			// The indexer holds the write lock and replaces usage stats with its
@@ -106,7 +127,7 @@ func main() {
 			count, _ := db.FileCount()
 			cacheUsed, err := db.CacheUsed(context.Background())
 			if err != nil {
-				log.Printf("Failed to read the page cache size: %v", err)
+				log.Printf("WARN: Failed to read the page cache size: %v", err)
 			}
 			out.OK(req.ID, req.Type, nil, ipc.Status{
 				Indexing:   indexing.Load(),
@@ -153,7 +174,7 @@ func main() {
 					out.OK("", ipc.EventIndexProgress, nil, p)
 				})
 				if err != nil {
-					log.Printf("Indexing failed: %v", err)
+					log.Printf("ERROR: Indexing failed: %v", err)
 					code := ""
 					if database.IsDiskFull(err) {
 						code = ipc.CodeDiskFull

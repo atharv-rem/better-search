@@ -130,10 +130,13 @@ export function ServerRack({ top, bottom, indexing }: { top: RackUnit[]; bottom:
     setLocated(i);
     locateTimer.current = setTimeout(() => setLocated(null), 3000);
   };
-  // The lights and fans only run while the window is visible and focused.
-  const [paused, setPaused] = useState(false);
+  // The lights and fans only run while the rack is pointed at (or a unit has
+  // keyboard focus), in a window that's visible and focused.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [away, setAway] = useState(false);
   useEffect(() => {
-    const sync = () => setPaused(document.hidden || !document.hasFocus());
+    const sync = () => setAway(document.hidden || !document.hasFocus());
     sync();
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("focus", sync);
@@ -144,11 +147,20 @@ export function ServerRack({ top, bottom, indexing }: { top: RackUnit[]; bottom:
       window.removeEventListener("blur", sync);
     };
   }, []);
+  const paused = away || !(hovered || focused);
   const anyLit = slots.some((u) => u && (u.lamp === "on" || u.lamp === "busy"));
   const label = `A server rack holding the index: ${top.map((u) => u.title).join(", ")}.`;
 
   return (
-    <div className="rack" data-indexing={indexing ? "" : undefined} data-paused={paused ? "" : undefined}>
+    <div
+      className="rack"
+      data-indexing={indexing ? "" : undefined}
+      data-paused={paused ? "" : undefined}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setFocused(false)}
+    >
       <svg
         className="rk-svg"
         viewBox={`0 0 ${WIDTH} ${g.viewHeight}`}

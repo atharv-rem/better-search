@@ -13,7 +13,7 @@ import (
 )
 
 // v2: files_name_nocase index for short-query prefix search.
-const schemaVersion = 2
+const schemaVersion = 3
 
 //go:embed schema.sql
 var schemaSQL string
@@ -52,10 +52,25 @@ type File struct {
 type DB struct {
 	sql *sql.DB
 
-	// Folder id -> full path, so building result paths doesn't re-walk the tree.
-	dirMu    sync.Mutex
-	dirCache map[int64]string
-	treeSeen int64 // meta tree_version the cache was last checked against
+	// Statements run over and over (see prepared), by their SQL.
+	stmtMu sync.Mutex
+	stmts  map[string]*sql.Stmt
+}
+
+// prepared is q as a statement prepared once and kept: the driver otherwise
+// parses the SQL again on every call, which costs as much as a small lookup.
+func (d *DB) prepared(q string) (*sql.Stmt, error) {
+	d.stmtMu.Lock()
+	defer d.stmtMu.Unlock()
+	if s := d.stmts[q]; s != nil {
+		return s, nil
+	}
+	s, err := d.sql.Prepare(q)
+	if err != nil {
+		return nil, err
+	}
+	d.stmts[q] = s
+	return s, nil
 }
 
 // DefaultPath is %LOCALAPPDATA%\better-search\index.db.
@@ -93,7 +108,7 @@ func Open(path string) (*DB, error) {
 	conn.SetMaxOpenConns(2)
 	conn.SetMaxIdleConns(1)
 
-	db := &DB{sql: conn, dirCache: make(map[int64]string)}
+	db := &DB{sql: conn, stmts: make(map[string]*sql.Stmt)}
 	if err := db.migrate(); err != nil {
 		conn.Close()
 		return nil, err
@@ -102,6 +117,12 @@ func Open(path string) (*DB, error) {
 }
 
 func (d *DB) Close() error {
+	d.stmtMu.Lock()
+	for _, s := range d.stmts {
+		s.Close()
+	}
+	d.stmts = map[string]*sql.Stmt{}
+	d.stmtMu.Unlock()
 	return d.sql.Close()
 }
 
@@ -136,7 +157,7 @@ func (d *DB) migrate() error {
 	if current > schemaVersion {
 		return fmt.Errorf("database schema v%d is newer than this app (v%d)", current, schemaVersion)
 	}
-	// Future schema upgrades go here: if current < 2 { ... }
+	// v3 only adds files_child_dirs, which schemaSQL above creates.
 	return d.setMeta(d.sql, "schema_version", strconv.Itoa(schemaVersion))
 }
 
@@ -151,8 +172,12 @@ func (d *DB) setMeta(ex execer, key, value string) error {
 }
 
 func (d *DB) meta(key string) (string, bool, error) {
+	s, err := d.prepared(`SELECT value FROM meta WHERE key = ?`)
+	if err != nil {
+		return "", false, err
+	}
 	var v string
-	err := d.sql.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	err = s.QueryRow(key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}
@@ -240,6 +265,7 @@ func (d *DB) BeginBulk() (*Bulk, error) {
 		// Built once at the end (Commit) rather than updated row by row.
 		`DROP INDEX IF EXISTS files_parent_name`,
 		`DROP INDEX IF EXISTS files_name_nocase`,
+		`DROP INDEX IF EXISTS files_child_dirs`,
 		`DELETE FROM files`,
 	}
 	for _, s := range steps {
@@ -306,6 +332,7 @@ func (b *Bulk) flush() error {
 const (
 	createParentNameIndex = `CREATE UNIQUE INDEX files_parent_name ON files (parent_id, name)`
 	createNameIndex       = `CREATE INDEX files_name_nocase ON files (name COLLATE NOCASE)`
+	createChildDirsIndex  = `CREATE INDEX files_child_dirs ON files (parent_id, name, modified_at) WHERE is_dir = 1`
 )
 
 // Without its unique index during the load, a folder can get two rows of
@@ -333,6 +360,7 @@ func (b *Bulk) Commit() error {
 	}
 	steps := []string{
 		createNameIndex,
+		createChildDirsIndex,
 		`UPDATE files SET open_count = k.open_count, last_opened = k.last_opened
 			FROM temp.keep_usage AS k
 			WHERE files.id = k.id AND files.name = k.name`,
@@ -359,11 +387,7 @@ func (b *Bulk) Commit() error {
 		b.tx.Rollback()
 		return err
 	}
-	if err := b.tx.Commit(); err != nil {
-		return err
-	}
-	b.db.ClearCache()
-	return nil
+	return b.tx.Commit()
 }
 
 func (b *Bulk) Abort() {

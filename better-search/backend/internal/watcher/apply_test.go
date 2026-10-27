@@ -237,3 +237,59 @@ func TestCatchUpFindsChangesMadeWhileOff(t *testing.T) {
 		t.Errorf("second pass looked inside %d folders, want 0", c.changed)
 	}
 }
+
+// The index's rows for a folder that was moved away and whose old parent was
+// deleted, after Windows gave that parent's record to a new file inside it:
+// the folder's rows hang off the new file, in a loop no path leads out of.
+// Seeing the new file clears that out and puts the folder back where it is.
+func TestRecordReuseRepairsLoop(t *testing.T) {
+	dir, _ := filepath.Abs(t.TempDir())
+	db, err := database.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seed(t, db, dir)
+	ix := indexer.New(nil, nil, nil, nil)
+
+	assets := filepath.Join(dir, "window1", "assets")
+	os.MkdirAll(assets, 0o755)
+	logo := filepath.Join(assets, "logo.png")
+	os.WriteFile(logo, nil, 0o644)
+	id := func(p string) int64 {
+		serial, rec, err := fileID(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vol, _, _ := db.LookupVolume(serial)
+		return vol<<32 | int64(rec)
+	}
+
+	ch, err := db.BeginChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []database.File{
+		{ID: id(logo), ParentID: id(dir), Name: "old", IsDir: true},
+		{ID: id(filepath.Dir(assets)), ParentID: id(logo), Name: "window1", IsDir: true},
+		{ID: id(assets), ParentID: id(filepath.Dir(assets)), Name: "assets", IsDir: true},
+	} {
+		if _, err := ch.Upsert(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ch.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	apply(t, db, ix, logo)
+	if !has(t, db, logo) {
+		t.Fatal("file and its folders not put back")
+	}
+	if has(t, db, filepath.Join(dir, "old")) {
+		t.Fatal("stale folder row left behind")
+	}
+	if p, err := db.Path(database.File{ParentID: id(assets), Name: "logo.png"}); err != nil || p != logo {
+		t.Fatalf("path = %q, %v; want %q", p, err, logo)
+	}
+}

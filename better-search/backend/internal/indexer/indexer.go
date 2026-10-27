@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"better-search/backend/internal/database"
@@ -210,6 +211,11 @@ type Indexer struct {
 	// From the user's settings (see Apply).
 	skipDrives map[string]bool
 	drivePaths map[string]*pathRule // by drive, "" for every drive
+
+	// Folders checked for a Cargo.toml (see hasCargoToml), by lower-cased
+	// path. The watcher calls Excluded from a goroutine per drive.
+	cargoMu sync.Mutex
+	cargo   map[string]cargoSeen
 }
 
 // New makes an indexer that writes to store, which only Run needs.
@@ -255,7 +261,7 @@ func (ix *Indexer) Run() ([]DriveStats, error) {
 		}
 		v, err := openVolume(d)
 		if err != nil {
-			log.Printf("Skipping %s: %v", d, err)
+			log.Printf("WARN: Skipping %s: %v", d, err)
 			continue
 		}
 		idx, err := ix.store.VolumeIndex(v.serial)

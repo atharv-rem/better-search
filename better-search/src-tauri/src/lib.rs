@@ -1,6 +1,7 @@
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tokio::sync::oneshot;
 use tauri_plugin_log::log;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{
@@ -9,6 +10,7 @@ use tauri_plugin_shell::{
 };
 
 mod docx;
+mod logs;
 mod recent;
 mod settings;
 mod storage;
@@ -21,6 +23,27 @@ use settings::SettingsState;
 /// open the index. Restarted on the next show if it ever exits.
 #[derive(Default)]
 struct Backend(Mutex<Option<CommandChild>>);
+
+/// Requests sent with `backend_request` that the backend hasn't answered
+/// yet, by request id. Dropping a sender (the backend stopped) fails its
+/// request.
+#[derive(Default)]
+struct PendingReplies(Mutex<HashMap<String, oneshot::Sender<String>>>);
+
+/// The one field of a backend line that says whom it answers. Events, which
+/// answer no request, have none.
+#[derive(serde::Deserialize)]
+struct ReplyId {
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// The waiting request a backend line answers, if any: removed, as each is
+/// answered once.
+fn take_pending(app: &AppHandle, line: &str) -> Option<oneshot::Sender<String>> {
+    let id = serde_json::from_str::<ReplyId>(line).ok()?.id.filter(|id| !id.is_empty())?;
+    app.state::<PendingReplies>().0.lock().unwrap().remove(&id)
+}
 
 fn start_backend(app: &AppHandle) {
     let state = app.state::<Backend>();
@@ -45,20 +68,27 @@ fn start_backend(app: &AppHandle) {
     let pid = child.pid();
     *current = Some(child);
 
-    // Forward each stdout line (one JSON message) to the frontend.
+    // Each stdout line is one JSON message: a reply goes to the request
+    // waiting on it, as the JSON it already is; an event to every window.
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line).trim_end().to_string();
-                    if !line.is_empty() {
-                        let _ = app.emit("backend-message", line);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match take_pending(&app, &line) {
+                        Some(waiting) => {
+                            let _ = waiting.send(line);
+                        }
+                        None => {
+                            let _ = app.emit("backend-message", line);
+                        }
                     }
                 }
-                CommandEvent::Stderr(line) => {
-                    log::info!("[backend] {}", String::from_utf8_lossy(&line).trim_end());
-                }
+                CommandEvent::Stderr(line) => logs::relay("backend", &line),
                 CommandEvent::Terminated(status) => {
                     // Only report it if it died on its own, not because we stopped it.
                     let state = app.state::<Backend>();
@@ -66,7 +96,8 @@ fn start_backend(app: &AppHandle) {
                     if current.as_ref().map(|c| c.pid()) == Some(pid) {
                         *current = None;
                         log::error!("Backend exited unexpectedly: {status:?}");
-                        let _ = app.emit("backend-stopped", ());
+                        // Nothing in flight will be answered.
+                        app.state::<PendingReplies>().0.lock().unwrap().clear();
                     }
                     break;
                 }
@@ -119,9 +150,7 @@ fn start_watcher(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
-                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
-                    log::info!("[watcher] {}", String::from_utf8_lossy(&line).trim_end());
-                }
+                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => logs::relay("watcher", &line),
                 CommandEvent::Terminated(status) => {
                     let state = app.state::<Watcher>();
                     let mut current = state.0.lock().unwrap();
@@ -156,7 +185,7 @@ fn stop_backend(app: &AppHandle) {
     let child = app.state::<Backend>().0.lock().unwrap().take();
     if let Some(child) = child {
         let _ = child.kill();
-        let _ = app.emit("backend-stopped", ());
+        app.state::<PendingReplies>().0.lock().unwrap().clear();
     }
 }
 
@@ -250,15 +279,16 @@ struct BarLayoutInner {
 /// search bar as far down as the page asked (see `BarLayoutInner`), so
 /// results grow downwards and the preview upwards. The window is only as big
 /// as its content (the page sizes it, see `resize_window`), which keeps
-/// WebView2's drawing buffers small.
-fn place_search(window: &WebviewWindow) {
+/// WebView2's drawing buffers small. Returns the height of that monitor
+/// without the taskbar, in physical pixels.
+fn place_search(window: &WebviewWindow) -> Option<u32> {
     let monitor = window
         .cursor_position()
         .ok()
         .and_then(|p| window.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| window.primary_monitor().ok().flatten());
     let (Some(monitor), Ok(size)) = (monitor, window.outer_size()) else {
-        return;
+        return None;
     };
 
     let area = monitor.size();
@@ -272,6 +302,7 @@ fn place_search(window: &WebviewWindow) {
         origin.x + (area.width as i32 - size.width as i32) / 2,
         work_top + bar_y - bar.top,
     ));
+    Some(monitor.work_area().size.height)
 }
 
 /// Moves and resizes in one step: done as two, the window would show for a
@@ -303,14 +334,45 @@ fn set_bounds(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
 
 fn show_search(window: &WebviewWindow) {
     set_webview_low_memory(window, false);
-    start_backend(window.app_handle());
+    let app = window.app_handle();
+    start_backend(app);
 
-    place_search(window);
+    let work_height = place_search(window);
     let _ = window.show();
     let _ = window.set_focus();
-    // Tells the page to refresh its state. Focus events aren't reliable for
-    // this: the webview often still counts as focused from last time.
-    let _ = window.app_handle().emit("search-shown", ());
+    // Tells the page to refresh its state, and hands it what it would
+    // otherwise ask for a command at a time just as it wakes. Focus events
+    // aren't reliable for this: the webview often still counts as focused
+    // from last time.
+    let _ = app.emit_to(SEARCH_LABEL, "search-shown", ShownState { work_height, ..shown_state(app) });
+    refresh_browsers(app);
+}
+
+/// What the search page needs each time it's shown (`show_search`), and once
+/// when it loads (`search_state`).
+#[derive(serde::Serialize, Clone)]
+struct ShownState {
+    /// Newest first; the settings page may have cleared them since.
+    recent: Vec<String>,
+    browsers: Vec<Browser>,
+    pending_update: Option<String>,
+    /// The height of the monitor the window opened on, without the taskbar,
+    /// in physical pixels. None when the page should measure it itself.
+    work_height: Option<u32>,
+}
+
+fn shown_state(app: &AppHandle) -> ShownState {
+    ShownState {
+        recent: recent::read(app),
+        browsers: cached_browsers(app),
+        pending_update: app.state::<PendingUpdate>().0.lock().unwrap().clone(),
+        work_height: None,
+    }
+}
+
+#[tauri::command]
+fn search_state(app: AppHandle) -> ShownState {
+    shown_state(&app)
 }
 
 /// Dismissing the search only hides the window, which is never destroyed, so
@@ -530,31 +592,69 @@ fn search_ready(window: WebviewWindow) {
     }
 }
 
-/// Writes one JSON request line to the backend's stdin.
+/// Writes one JSON request line to the backend's stdin and resolves with the
+/// reply, which echoes the request's `id`. The reply goes back as the JSON
+/// the backend wrote, not wrapped in a string, so the page parses it once.
 #[tauri::command]
-fn backend_send(app: AppHandle, message: String) -> Result<(), String> {
-    let state = app.state::<Backend>();
-    let mut current = state.0.lock().unwrap();
-    let child = current.as_mut().ok_or("backend is not running")?;
-    child
-        .write(format!("{message}\n").as_bytes())
-        .map_err(|e| e.to_string())
+async fn backend_request(app: AppHandle, id: String, message: String) -> Result<tauri::ipc::Response, String> {
+    let (reply, replied) = oneshot::channel();
+    // Waiting before the request goes out: the reply can't arrive unclaimed.
+    app.state::<PendingReplies>().0.lock().unwrap().insert(id.clone(), reply);
+    let sent = match app.state::<Backend>().0.lock().unwrap().as_mut() {
+        Some(child) => child.write(format!("{message}\n").as_bytes()).map_err(|e| e.to_string()),
+        None => Err("backend is not running".into()),
+    };
+    if let Err(e) = sent {
+        app.state::<PendingReplies>().0.lock().unwrap().remove(&id);
+        return Err(e);
+    }
+    let line = replied.await.map_err(|_| "backend stopped".to_string())?;
+    Ok(tauri::ipc::Response::new(line))
 }
 
 /// Opens a search result with its default app, or shows it in Explorer.
 #[tauri::command]
-fn open_result(app: AppHandle, path: String, reveal: bool) -> Result<(), String> {
-    let opener = app.opener();
+fn open_result(window: WebviewWindow, path: String, reveal: bool) -> Result<(), String> {
+    let opener = window.opener();
     if reveal {
         opener.reveal_item_in_dir(&path)
+    } else if std::path::Path::new(&path).is_file() {
+        return open_file(&window, &path);
     } else {
         opener.open_path(&path, None::<&str>)
     }
     .map_err(|e| e.to_string())
 }
 
+/// Opens a file as the opener plugin does, but with the search window as the
+/// owner of any message Windows shows on the way (a shortcut whose target is
+/// gone, a file no app opens). Unowned, it opens behind the always-on-top
+/// search, which waits on it, and can't be reached to dismiss.
+#[cfg(windows)]
+fn open_file(window: &WebviewWindow, path: &str) -> Result<(), String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        hwnd: window.hwnd().map(|hwnd| HWND(hwnd.0 as _)).unwrap_or_default(),
+        lpFile: PCWSTR(wide.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    unsafe { ShellExecuteExW(&mut info) }.map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn open_file(window: &WebviewWindow, path: &str) -> Result<(), String> {
+    window.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+}
+
 /// A browser installed on this machine, as registered with Windows.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct Browser {
     /// The registration's key name under `Clients\StartMenuInternet`.
     id: String,
@@ -617,10 +717,31 @@ fn exe_of_command(command: &str) -> Option<String> {
     Some(command[..end].to_string())
 }
 
-/// Lists the browsers installed on this machine for the search's browser menu.
+/// `installed_browsers` as last read. Reading them goes through the registry
+/// and checks each program is there, so a show uses this and reads them again
+/// afterwards (`refresh_browsers`): a browser installed meanwhile is listed
+/// from the next show on.
+#[derive(Default)]
+struct Browsers(Mutex<Option<Vec<Browser>>>);
+
+fn cached_browsers(app: &AppHandle) -> Vec<Browser> {
+    app.state::<Browsers>().0.lock().unwrap().get_or_insert_with(installed_browsers).clone()
+}
+
+fn refresh_browsers(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let found = installed_browsers();
+        *app.state::<Browsers>().0.lock().unwrap() = Some(found);
+    });
+}
+
+/// Lists the browsers installed on this machine, for the settings page.
 #[tauri::command]
-fn list_browsers() -> Vec<Browser> {
-    installed_browsers()
+fn list_browsers(app: AppHandle) -> Vec<Browser> {
+    let found = installed_browsers();
+    *app.state::<Browsers>().0.lock().unwrap() = Some(found.clone());
+    found
 }
 
 /// Opens a web page in the chosen browser, or the default one when `browser`
@@ -1162,6 +1283,8 @@ pub fn run() {
         .manage(Watcher::default())
         .manage(BarLayout::default())
         .manage(PendingUpdate::default())
+        .manage(PendingReplies::default())
+        .manage(Browsers::default())
         // The app is named "Better Search" (productName, which Task Manager
         // shows); its login entry and log file keep the names they had.
         .plugin(tauri_plugin_autostart::Builder::new().app_name("better-search").build())
@@ -1176,6 +1299,8 @@ pub fn run() {
                     }),
                 ])
                 .level(tauri_plugin_log::log::LevelFilter::Info)
+                // The Troubleshooting page shows these times as they are.
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1184,7 +1309,8 @@ pub fn run() {
             resize_window,
             hide_window,
             search_ready,
-            backend_send,
+            backend_request,
+            search_state,
             open_result,
             open_url,
             list_browsers,
@@ -1197,6 +1323,7 @@ pub fn run() {
             open_settings,
             quit_app,
             open_logs_folder,
+            logs::recent_problems,
             can_update,
             pending_update,
             settings::get_settings,
@@ -1211,7 +1338,6 @@ pub fn run() {
             web_search::web_search,
             web_search::favicon,
             web_search::api_usage,
-            recent::recent_searches,
             recent::add_recent_search,
             recent::clear_recent_searches
         ])

@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -208,7 +209,7 @@ func TestSaveSkipsExcludedAndOrphans(t *testing.T) {
 	if n != 4 {
 		t.Fatalf("wrote %d rows, want 4", n)
 	}
-	got, err := db.SearchNames("notepad", []string{"notepad"}, 5)
+	got, err := db.SearchNames(context.Background(), "notepad", []string{"notepad"}, 5)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("notepad: %v %v", got, err)
 	}
@@ -276,7 +277,7 @@ func TestSaveSkipsExcludedPaths(t *testing.T) {
 		"inside-packages.txt": false, "blob.final": false, "build-output.rlib": false, "inside-cache.bin": false,
 		"snapshot.ts": false,
 	} {
-		got, err := db.SearchNames(name, []string{name}, 5)
+		got, err := db.SearchNames(context.Background(), name, []string{name}, 5)
 		if err != nil {
 			t.Fatal(err)
 		}

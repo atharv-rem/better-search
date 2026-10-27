@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,7 +66,7 @@ func TestApplyExcludesUserFolders(t *testing.T) {
 	}
 
 	for name, want := range map[string]int{"old": 0, "survivor": 1, "out": 0, "kept-secret": 1} {
-		got, err := db.SearchNames(name, []string{name}, 5)
+		got, err := db.SearchNames(context.Background(), name, []string{name}, 5)
 		if err != nil {
 			t.Fatal(err)
 		}

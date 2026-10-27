@@ -1,34 +1,47 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import contextLogo from "@/assets/logos/context.svg";
+import exaLogo from "@/assets/logos/exa.svg";
+import firecrawlLogo from "@/assets/logos/firecrawl.svg";
+import tinyfishLogo from "@/assets/logos/tinyfish.svg";
 
 // Web search with the user's own API key for a search provider (web_search.rs).
 // The keys stay in the shell: pages only learn whether one is saved.
 
-/** Keep in step with `PROVIDERS` in web_search.rs. */
+/** Keep in step with `PROVIDERS` in web_search.rs. `logo` is bundled, never
+ *  fetched; `env` is the variable a .env file keeps its key in. */
 export const PROVIDERS = [
   {
     id: "exa",
     name: "Exa",
     description: "Search built for AI, with the passages that match from each page.",
     keyUrl: "https://dashboard.exa.ai/api-keys",
+    logo: exaLogo,
+    env: ["EXA_API_KEY"],
   },
   {
     id: "firecrawl",
     name: "Firecrawl",
     description: "Web search from Firecrawl's scraping API.",
     keyUrl: "https://www.firecrawl.dev/app/api-keys",
+    logo: firecrawlLogo,
+    env: ["FIRECRAWL_API_KEY"],
   },
   {
     id: "tinyfish",
     name: "TinyFish",
     description: "Web search from TinyFish's agent platform.",
     keyUrl: "https://agent.tinyfish.ai/api-keys",
+    logo: tinyfishLogo,
+    env: ["TINYFISH_API_KEY"],
   },
   {
     id: "context",
     name: "Context.dev",
     description: "Web search from Context.dev's web data API.",
     keyUrl: "https://www.context.dev/",
+    logo: contextLogo,
+    env: ["CONTEXT_DEV_API_KEY", "CONTEXT_API_KEY"],
   },
 ] as const;
 

@@ -6,7 +6,6 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   ArrowClockwiseIcon,
   DownloadSimpleIcon,
-  FileTextIcon,
   GearSixIcon,
   GlobeIcon,
   HouseIcon,
@@ -15,6 +14,7 @@ import {
   KeyIcon,
   MagnifyingGlassIcon,
   TerminalIcon,
+  WrenchIcon,
   type IconProps,
 } from "@/lib/phosphor";
 import { saveSettings, useSettings, type Settings } from "@/lib/settings";
@@ -25,10 +25,11 @@ import { ActionButton, Group, Row } from "@/settings/controls";
 import { ApiKeysSection } from "@/settings/api-keys-section";
 import { GeneralSection } from "@/settings/general-section";
 import { HomeSection } from "@/settings/home-section";
-import { isHeldOpen, keepOpenFor } from "@/settings/keep-open";
+import { isHeldOpen } from "@/settings/keep-open";
 import { IndexingSection } from "@/settings/indexing-section";
 import { SearchSection, WebSection } from "@/settings/search-section";
 import { ShortcutsSection } from "@/settings/shortcuts-section";
+import { TroubleshootingSection } from "@/settings/troubleshooting-section";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 type SectionProps = { settings: Settings; save: Save };
@@ -41,6 +42,7 @@ const SECTIONS: { id: string; name: string; icon: ComponentType<IconProps>; Cont
   { id: "web", name: "Web search", icon: GlobeIcon, Content: WebSection },
   { id: "shortcuts", name: "Shortcuts", icon: TerminalIcon, Content: ShortcutsSection },
   { id: "api-keys", name: "API keys", icon: KeyIcon, Content: ApiKeysSection },
+  { id: "troubleshooting", name: "Troubleshoot", icon: WrenchIcon, Content: TroubleshootingSection },
   { id: "about", name: "About", icon: InfoIcon, Content: AboutSection },
 ];
 
@@ -194,7 +196,6 @@ type UpdateState =
 
 function AboutSection() {
   const [version, setVersion] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateState>({ kind: "idle" });
   useEffect(() => {
     getVersion()
@@ -279,19 +280,6 @@ function AboutSection() {
             </ActionButton>
           )
         )}
-      </Row>
-      <Row label="Logs" description="What the app and the indexer wrote while running, for tracking down problems." error={error}>
-        <ActionButton
-          onClick={() => {
-            keepOpenFor();
-            invoke("open_logs_folder")
-              .then(() => setError(null))
-              .catch((err) => setError(String(err)));
-          }}
-        >
-          <FileTextIcon size={14} />
-          Open logs folder
-        </ActionButton>
       </Row>
     </Group>
   );

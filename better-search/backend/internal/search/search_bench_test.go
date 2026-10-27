@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -26,10 +27,11 @@ func BenchmarkSearch(b *testing.B) {
 	}
 	defer db.Close()
 
+	ctx := context.Background()
 	for _, q := range benchQueries {
 		b.Run(q, func(b *testing.B) {
 			for b.Loop() {
-				if _, err := Search(db, q, 50); err != nil {
+				if _, err := Search(ctx, db, q, 50); err != nil {
 					b.Fatal(err)
 				}
 			}

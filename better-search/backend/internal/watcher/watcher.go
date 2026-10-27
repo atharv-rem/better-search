@@ -86,7 +86,7 @@ func Run(dbPath, settingsPath string) int {
 
 	drives, err := indexer.FixedDrives()
 	if err != nil {
-		log.Printf("List drives: %v", err)
+		log.Printf("ERROR: List drives: %v", err)
 		return 1
 	}
 	var wg sync.WaitGroup
@@ -158,7 +158,7 @@ func (w *watcher) readChanges(drive string, volume int64) {
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if err != nil {
-		log.Printf("Watch %s: %v", drive, err)
+		log.Printf("ERROR: Watch %s: %v", drive, err)
 		return
 	}
 	defer windows.CloseHandle(h)
@@ -169,12 +169,12 @@ func (w *watcher) readChanges(drive string, volume int64) {
 		var n uint32
 		err := windows.ReadDirectoryChanges(h, &buf[0], uint32(len(buf)), true, notifyMask, &n, nil, 0)
 		if errors.Is(err, windows.ERROR_NOTIFY_ENUM_DIR) || (err == nil && n == 0) {
-			log.Printf("Watch %s: too many changes at once, some were missed", drive)
+			log.Printf("WARN: Watch %s: too many changes at once, some were missed", drive)
 			w.markOverflow()
 			continue
 		}
 		if err != nil {
-			log.Printf("Watch %s: %v", drive, err)
+			log.Printf("ERROR: Watch %s: %v", drive, err)
 			return
 		}
 		w.refreshRules()
@@ -264,7 +264,7 @@ func (w *watcher) flush() {
 		return
 	}
 	if err := w.apply(paths, overflow); err != nil {
-		log.Printf("Apply changes: %v", err)
+		log.Printf("WARN: Apply changes: %v", err)
 		retry()
 		return
 	}

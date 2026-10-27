@@ -37,17 +37,43 @@ func (a *applier) path(p string) error {
 	if !ok {
 		return nil
 	}
-	if has, err := a.ch.Has(parent); err != nil || !has {
+	if has, err := a.ch.HasDir(parent); err != nil || !has {
 		return err // its folder isn't in the index, so neither is it
 	}
 	existed, err := a.upsert(id, parent, filepath.Base(p), info)
 	if err != nil {
 		return err
 	}
+	// Clearing out stale rows (see database.Changes.Upsert) can take this
+	// entry's own folder with them.
+	if has, err := a.ch.HasDir(parent); err != nil || !has {
+		if err != nil {
+			return err
+		}
+		return a.restore(filepath.Dir(p))
+	}
 	if info.IsDir() && !existed {
 		return a.walk(p, id) // a new folder (or one moved in) brings its contents
 	}
 	return nil
+}
+
+// restore puts back a folder that was cleared out of the index as stale but
+// is still on disk, with everything in it, and the folders above it that
+// went with it.
+func (a *applier) restore(dir string) error {
+	_, parent, ok := a.ids(dir)
+	if !ok {
+		return nil
+	}
+	has, err := a.ch.HasDir(parent)
+	if err != nil {
+		return err
+	}
+	if !has && filepath.Dir(dir) != dir {
+		return a.restore(filepath.Dir(dir)) // brings dir back too, as it walks
+	}
+	return a.path(dir)
 }
 
 func (a *applier) remove(p string) error {
@@ -73,8 +99,17 @@ func (a *applier) upsert(id, parent int64, name string, info fs.FileInfo) (bool,
 	return a.ch.Upsert(f)
 }
 
-// walk adds everything inside a new folder.
+// walk adds everything inside a new folder. Each entry's folder is one the
+// walk has already added, so only the entry's own id is read from disk.
 func (a *applier) walk(dir string, dirID int64) error {
+	serial, _, err := fileID(dir)
+	if err != nil {
+		return nil
+	}
+	vol, ok := a.volume(serial)
+	if !ok {
+		return nil
+	}
 	ids := map[string]int64{dir: dirID}
 	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -96,10 +131,11 @@ func (a *applier) walk(dir string, dirID int64) error {
 		if err != nil {
 			return nil
 		}
-		id, _, ok := a.ids(p)
-		if !ok {
+		s, record, err := fileID(p)
+		if err != nil || s != serial {
 			return nil
 		}
+		id := vol<<32 | int64(record)
 		parent, ok := ids[filepath.Dir(p)]
 		if !ok {
 			return nil
@@ -126,15 +162,23 @@ func (a *applier) ids(p string) (id, parent int64, ok bool) {
 	if err != nil || pSerial != serial {
 		return 0, 0, false
 	}
-	vol, known := a.volumes[serial]
-	if !known {
-		v, found, _ := a.db.LookupVolume(serial)
-		if !found {
-			return 0, 0, false
-		}
-		vol, a.volumes[serial] = v, v
+	vol, ok := a.volume(serial)
+	if !ok {
+		return 0, 0, false
 	}
 	return vol<<32 | int64(record), vol<<32 | int64(pRecord), true
+}
+
+// volume is the index's number for an NTFS volume, false if it isn't indexed.
+func (a *applier) volume(serial uint64) (int64, bool) {
+	if v, known := a.volumes[serial]; known {
+		return v, true
+	}
+	v, found, _ := a.db.LookupVolume(serial)
+	if found {
+		a.volumes[serial] = v
+	}
+	return v, found
 }
 
 // fileIDInfo is FILE_ID_INFO.

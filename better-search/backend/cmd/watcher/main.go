@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"log"
 	"os"
 
 	"better-search/backend/internal/database"
@@ -14,5 +15,8 @@ func main() {
 	dbPath := flag.String("db", database.DefaultPath(), "path to the SQLite index")
 	settingsPath := flag.String("settings", "", "the app's settings.json, for the user's indexing exclusions")
 	flag.Parse()
+	// The app timestamps each line, and reads a leading "ERROR: " or "WARN: "
+	// as its level.
+	log.SetFlags(0)
 	os.Exit(watcher.Run(*dbPath, *settingsPath))
 }

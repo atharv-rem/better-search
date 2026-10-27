@@ -42,7 +42,7 @@ func (w *watcher) catchUp(drive string) {
 
 	db, err := database.Open(w.dbPath)
 	if err != nil {
-		log.Printf("Catch-up %s: %v", drive, err)
+		log.Printf("WARN: Catch-up %s: %v", drive, err)
 		return
 	}
 	defer db.Close()
@@ -52,13 +52,22 @@ func (w *watcher) catchUp(drive string) {
 		return
 	}
 	start := time.Now()
-	c := &catcher{db: db, ix: w.ix.Load(), stop: func() bool { return indexer.IsRunning(w.dbPath) }}
+	// Asking opens a file, and this runs once per folder: ask once a second.
+	var askedAt time.Time
+	var running bool
+	stop := func() bool {
+		if time.Since(askedAt) >= time.Second {
+			askedAt, running = time.Now(), indexer.IsRunning(w.dbPath)
+		}
+		return running
+	}
+	c := &catcher{db: db, ix: w.ix.Load(), stop: stop}
 	err = c.dir(drive+`\`, root, mtime)
 	switch {
 	case errors.Is(err, errStopCatchUp):
 		log.Printf("Catch-up %s: stopped, a full index is running", drive)
 	case err != nil:
-		log.Printf("Catch-up %s: %v", drive, err)
+		log.Printf("WARN: Catch-up %s: %v", drive, err)
 	default:
 		log.Printf("Catch-up %s: checked %d folders, %d had changes, in %v", drive, c.folders, c.changed, time.Since(start).Round(time.Millisecond))
 	}

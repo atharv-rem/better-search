@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { fontWeights } from "@/lib/font-weight";
 import { useShape } from "@/lib/shape-context";
@@ -26,11 +26,33 @@ function parentOf(path: string) {
   return parts.slice(-2).join("\\");
 }
 
+/** Rows drawn at first, and added each time the list nears its end. The
+ *  results setting goes up to 500, and every row is an icon, two lines of
+ *  text and a hover target to measure. */
+const ROWS_PER_PAGE = 100;
+
+/** Px from the bottom of what's drawn at which scrolling draws more. */
+const DRAW_AHEAD_PX = 200;
+
 export function SearchResults({ results, activeIndex, onActiveIndexChange, onOpen, maxHeight }: SearchResultsProps) {
   const shape = useShape();
   const listRef = useRef<HTMLDivElement>(null);
   const hover = useFluidHover(listRef);
   const { handlers, registerItem } = hover;
+
+  // New results start from the top again. Rows only ever get added until
+  // then, so the hover never loses a row it measured.
+  const [drawn, setDrawn] = useState({ results, count: ROWS_PER_PAGE });
+  const count = drawn.results === results ? drawn.count : ROWS_PER_PAGE;
+  const drawMore = (atLeast = 0) => {
+    const next = Math.min(results.length, Math.max(count + ROWS_PER_PAGE, atLeast));
+    if (next > count) setDrawn({ results, count: next });
+  };
+  // The keyboard can move past what's drawn (ArrowUp from the top wraps to
+  // the last row).
+  if (activeIndex !== null && activeIndex >= count - 1 && count < results.length) {
+    drawMore(activeIndex + ROWS_PER_PAGE);
+  }
 
   // One-way only: the parent's selection drives the highlight, and the hook
   // reports rows the pointer moves onto. Writing the selection back into the
@@ -70,11 +92,15 @@ export function SearchResults({ results, activeIndex, onActiveIndexChange, onOpe
         handlers.onMouseMove(e);
       }}
       onClick={handlers.onClick}
+      onScroll={(e) => {
+        const list = e.currentTarget;
+        if (list.scrollTop + list.clientHeight >= list.scrollHeight - DRAW_AHEAD_PX) drawMore();
+      }}
       className="relative flex flex-col overflow-y-auto p-1.5"
       style={{ maxHeight }}
     >
       <FluidHoverHighlight hover={{ ...hover, activeIndex }} className={cn(shape.bg, "bg-white/10")} />
-      {results.map((r, i) => (
+      {results.slice(0, count).map((r, i) => (
         <ResultRow
           key={r.id}
           result={r}

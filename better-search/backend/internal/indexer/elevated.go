@@ -205,7 +205,14 @@ func serve(db *database.DB, f *os.File, opts Options, onProgress func(Progress))
 		var err error
 		switch {
 		case m.Log != "":
-			log.Printf("[indexer] %s", m.Log)
+			// A level stays at the front, where the app looks for it.
+			level, msg := "", m.Log
+			for _, l := range []string{"ERROR: ", "WARN: "} {
+				if rest, ok := strings.CutPrefix(msg, l); ok {
+					level, msg = l, rest
+				}
+			}
+			log.Printf("%s[indexer] %s", level, msg)
 		case m.Progress != nil:
 			onProgress(*m.Progress)
 		case m.VolumeIndex != nil:
