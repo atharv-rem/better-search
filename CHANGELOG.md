@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/atharv-rem/better-search/compare/v0.4.0...v0.4.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* Refactor onboarding and settings UI with new components; enhance installation process to handle file deletion more robustly ([f6c0a06](https://github.com/atharv-rem/better-search/commit/f6c0a06919c545b7c9a2a0faf8c786608d703626))
+
 ## [0.4.0](https://github.com/atharv-rem/better-search/compare/v0.3.1...v0.4.0) (2026-10-27)
 
 
