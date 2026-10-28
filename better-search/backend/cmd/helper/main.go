@@ -12,8 +12,10 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"better-search/backend/internal/database"
 	"better-search/backend/internal/indexer"
@@ -61,6 +63,7 @@ func main() {
 	}()
 
 	var indexing atomic.Bool
+	excluded := &exclusions{settingsPath: *settingsPath}
 
 	// Typing sends a search per pause, and only the newest one's results are
 	// shown: each new search cancels the one before, which stops mid-query
@@ -73,7 +76,7 @@ func main() {
 		cancelSearch = cancel
 		go func() {
 			defer cancel()
-			results, err := search.Search(ctx, db, req.Query, req.Limit)
+			results, err := search.Search(ctx, db, req.Query, req.Limit, excluded.skip)
 			switch {
 			case ctx.Err() != nil:
 				out.ErrorCode(req.ID, req.Type, ipc.CodeSuperseded, "a newer search replaced this one")
@@ -198,4 +201,32 @@ func main() {
 	}
 
 	log.Println("👋 Stdin closed. Shutting down backend...")
+}
+
+// exclusions leaves out of the results what the user's settings exclude now:
+// a folder added in Settings stays in the index until a rebuild, which asks
+// for administrator permission, so it's left out here meanwhile. The settings
+// are read again whenever the file changes.
+type exclusions struct {
+	settingsPath string
+
+	mu       sync.Mutex
+	modified time.Time
+	ix       *indexer.Indexer
+}
+
+func (e *exclusions) skip(path string, isDir bool) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.settingsPath != "" {
+		if info, err := os.Stat(e.settingsPath); err == nil && !info.ModTime().Equal(e.modified) {
+			e.modified = info.ModTime()
+			e.ix = nil
+		}
+	}
+	if e.ix == nil {
+		e.ix = indexer.New(nil, indexer.DefaultExcludedDirs, indexer.DefaultExcludedPaths, nil)
+		e.ix.Apply(indexer.LoadOptions(e.settingsPath))
+	}
+	return e.ix.Excluded(path, isDir)
 }

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { backend, type SearchResult } from "@/lib/backend";
 import {
   filterApps,
   filterWindows,
@@ -15,6 +16,11 @@ import {
 export type SnapPhase = "layout" | "zones";
 
 const wrap = (i: number, length: number) => (i + length) % length;
+
+/** Files listed under the windows and apps, from the index. */
+const FILES_SHOWN = 8;
+/** Typing pauses this long before the index is searched, as in the search. */
+const FILE_SEARCH_DEBOUNCE_MS = 100;
 
 /** The snap mode's state and keys (Alt+W). `open` is whether the window is in
  *  snap mode; `shownAt` bumps on every show, which starts over with the
@@ -46,14 +52,35 @@ export function useSnap(open: boolean, shownAt: number) {
       .catch(() => setApps([]));
   }, [open, shownAt]);
 
+  // Files from the index for what's typed, to open in a zone. Only the
+  // newest search's answer is kept.
+  const [files, setFiles] = useState<SearchResult[]>([]);
+  const fileSeq = useRef(0);
+  useEffect(() => {
+    const seq = ++fileSeq.current;
+    const q = query.trim();
+    if (!open || !q) {
+      setFiles([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      backend
+        .search(q, FILES_SHOWN)
+        .then((found) => seq === fileSeq.current && setFiles(found))
+        .catch(() => seq === fileSeq.current && setFiles([]));
+    }, FILE_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [open, query]);
+
   const layout = LAYOUTS[layoutIndex];
-  // The open windows, then (once something is typed) the apps.
+  // The open windows, then (once something is typed) the apps and files.
   const visible = useMemo<SnapPick[]>(
     () => [
       ...filterWindows(windows, query).map((window) => ({ kind: "window" as const, window })),
       ...filterApps(apps, query).map((app) => ({ kind: "app" as const, app })),
+      ...files.map((file) => ({ kind: "file" as const, file })),
     ],
-    [windows, apps, query]
+    [windows, apps, files, query]
   );
   // Typing narrows the list: start again from its top.
   useEffect(() => setActive(0), [query]);
@@ -65,9 +92,9 @@ export function useSnap(open: boolean, shownAt: number) {
     setAssigned(LAYOUTS[index].zones.map(() => null));
   };
 
-  /** Puts a window or app in the current zone, then moves on to the next
-   *  empty zone, or snaps them all once none is left. A window leaves any
-   *  other zone it was in; an app can go in several, a window each. */
+  /** Puts a window, app or file in the current zone, then moves on to the
+   *  next empty zone, or snaps them all once none is left. A window leaves
+   *  any other zone it was in; an app or file can go in several. */
   const assign = (pick: SnapPick) => {
     const next = assigned.map((a) =>
       pick.kind === "window" && a?.kind === "window" && a.window.id === pick.window.id ? null : a

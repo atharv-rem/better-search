@@ -105,16 +105,21 @@ export function SettingsWindow() {
   // can't close before it ever opened.
   useEffect(() => {
     const win = getCurrentWindow();
-    let had = false;
-    win
-      .isFocused()
-      .then((focused) => (had ||= focused))
-      .catch(() => {});
+    // A new window usually gets focus before the listener below is set up,
+    // so that focus event is missed; the page's own focus says it had it.
+    let had = document.hasFocus();
+    const onFocus = () => (had = true);
+    window.addEventListener("focus", onFocus);
     const unlisten = win.onFocusChanged(({ payload: focused }) => {
       if (focused) had = true;
       else if (had && !isHeldOpen()) closeWindow();
     });
+    unlisten
+      .then(() => win.isFocused())
+      .then((focused) => (had ||= focused))
+      .catch(() => {});
     return () => {
+      window.removeEventListener("focus", onFocus);
       unlisten.then((fn) => fn()).catch(() => {});
     };
   }, []);

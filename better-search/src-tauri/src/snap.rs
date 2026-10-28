@@ -1,7 +1,8 @@
 //! Snap mode (Alt+W): the search window lists the open windows, and the user
 //! picks a layout and a window for each of its zones. Typing also finds the
-//! installed apps (the Start menu's): one picked for a zone is launched when
-//! the layout is applied, and its new window goes there. Windows are placed
+//! installed apps (the Start menu's) and the indexed files: one picked for a
+//! zone is launched or opened when the layout is applied, and its window goes
+//! there. Windows are placed
 //! on the monitor the search opened on, filling its work area (the screen
 //! without the taskbar).
 
@@ -41,12 +42,13 @@ pub struct InstalledApp {
 }
 
 /// Where a window goes, as fractions of the work area (0 to 1): an open
-/// window (`id`), or the window of an app launched for it (`app`, an
-/// `InstalledApp` id).
+/// window (`id`), the window of an app launched for it (`app`, an
+/// `InstalledApp` id), or of a file opened for it (`file`, its path).
 #[derive(serde::Deserialize)]
 pub struct Placement {
     id: Option<isize>,
     app: Option<String>,
+    file: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -211,20 +213,22 @@ fn place_all(placements: Vec<Placement>, (left, top, width, height): (f64, f64, 
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{IsWindow, SetForegroundWindow};
 
-    // Each app in turn, so each new window can be told apart.
+    // Each app or file in turn, so each new window can be told apart.
     let mut taken: Vec<isize> = placements.iter().filter_map(|p| p.id).collect();
     let ids: Vec<Option<isize>> = placements
         .iter()
-        .map(|p| match (&p.app, p.id) {
-            (Some(app), _) => {
-                let id = launch(app, &taken);
-                if id.is_none() {
-                    log::warn!("{app} showed no window to snap");
-                }
-                taken.extend(id);
-                id
+        .map(|p| {
+            let opened = match (&p.app, &p.file) {
+                (Some(app), _) => Opened::App(app),
+                (None, Some(file)) => Opened::File(file),
+                (None, None) => return p.id,
+            };
+            let id = launch(&opened, &taken);
+            if id.is_none() {
+                log::warn!("{} showed no window to snap", opened.name());
             }
-            (None, id) => id,
+            taken.extend(id);
+            id
         })
         .collect();
 
@@ -239,7 +243,7 @@ fn place_all(placements: Vec<Placement>, (left, top, width, height): (f64, f64, 
             let y = (top + p.y * height).round() as i32;
             let right = (left + (p.x + p.width) * width).round() as i32;
             let bottom = (top + (p.y + p.height) * height).round() as i32;
-            Some((HWND((*id)? as *mut _), (x, y, right - x, bottom - y), p.app.is_some()))
+            Some((HWND((*id)? as *mut _), (x, y, right - x, bottom - y), p.id.is_none()))
         })
         .collect();
 
@@ -300,12 +304,42 @@ unsafe fn in_place(hwnd: windows::Win32::Foundation::HWND, x: i32, y: i32, width
         && near(frame.bottom - frame.top, height)
 }
 
-/// Launches an installed app and gives back its window: the first window
-/// that wasn't open before, or, for an app that only brings its open window
-/// forward (one that allows a single instance), the window that comes to the
-/// front. `taken` are windows already given to other zones.
+/// What `launch` starts for a zone.
 #[cfg(windows)]
-fn launch(app: &str, taken: &[isize]) -> Option<isize> {
+enum Opened<'a> {
+    /// An `InstalledApp` id.
+    App(&'a str),
+    /// A file's path, opened in the app it belongs to.
+    File(&'a str),
+}
+
+#[cfg(windows)]
+impl Opened<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Opened::App(app) => app,
+            Opened::File(path) => path,
+        }
+    }
+
+    /// A file's name without its extension, lower-cased, which the window
+    /// showing it usually has in its title ("report - Word", "report.pdf").
+    /// None for apps, and for names too short to tell windows apart by.
+    fn title_hint(&self) -> Option<String> {
+        let Opened::File(path) = self else { return None };
+        let stem = std::path::Path::new(path).file_stem()?.to_string_lossy().to_lowercase();
+        (stem.chars().count() >= 3).then_some(stem)
+    }
+}
+
+/// Launches an installed app or opens a file, and gives back its window: the
+/// first window that wasn't open before, or, for an app that only brings its
+/// open window forward (one that allows a single instance), the window that
+/// comes to the front. A file may open as a tab in a window that was in front
+/// already (a PDF in Edge): then it's that window once its title names the
+/// file. `taken` are windows already given to other zones.
+#[cfg(windows)]
+fn launch(opened: &Opened, taken: &[isize]) -> Option<isize> {
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::ShellExecuteW;
@@ -313,11 +347,16 @@ fn launch(app: &str, taken: &[isize]) -> Option<isize> {
 
     let before: Vec<isize> = open_windows().iter().map(|w| w.id).collect();
     let front = unsafe { GetForegroundWindow() }.0 as isize;
-    let target: Vec<u16> = format!("shell:AppsFolder\\{app}").encode_utf16().chain(Some(0)).collect();
+    let target = match opened {
+        Opened::App(app) => format!("shell:AppsFolder\\{app}"),
+        Opened::File(path) => path.to_string(),
+    };
+    let title_hint = opened.title_hint();
+    let target: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
     let started = unsafe { ShellExecuteW(None, w!("open"), PCWSTR(target.as_ptr()), None, None, SW_SHOWNORMAL) };
     // Anything above 32 is success.
     if started.0 as isize <= 32 {
-        log::warn!("Couldn't launch {app}");
+        log::warn!("Couldn't open {}", opened.name());
         return None;
     }
 
@@ -325,11 +364,12 @@ fn launch(app: &str, taken: &[isize]) -> Option<isize> {
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(150));
         let foreground = unsafe { GetForegroundWindow() }.0 as isize;
+        let names_file = |title: &str| title_hint.as_ref().is_some_and(|hint| title.to_lowercase().contains(hint));
         let found = open_windows()
             .into_iter()
-            .map(|w| w.id)
-            .filter(|id| !taken.contains(id))
-            .find(|&id| !before.contains(&id) || (id == foreground && id != front));
+            .filter(|w| !taken.contains(&w.id))
+            .find(|w| !before.contains(&w.id) || (w.id == foreground && (w.id != front || names_file(&w.title))))
+            .map(|w| w.id);
         if let Some(id) = found {
             // A splash screen closes again: wait for the window that stays.
             std::thread::sleep(Duration::from_millis(400));
@@ -495,4 +535,19 @@ unsafe fn place(hwnd: windows::Win32::Foundation::HWND, x: i32, y: i32, width: i
         )?;
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::Opened;
+
+    #[test]
+    fn a_file_is_known_by_its_name_in_a_title() {
+        let hint = |path| Opened::File(path).title_hint();
+        assert_eq!(hint(r"C:\Docs\Report Q3.PDF").as_deref(), Some("report q3"));
+        assert_eq!(hint(r"C:\Docs\notes.tar.gz").as_deref(), Some("notes.tar"));
+        // Too short to pick its window out from the others.
+        assert_eq!(hint(r"C:\Docs\a.txt"), None);
+        assert_eq!(Opened::App("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App").title_hint(), None);
+    }
 }

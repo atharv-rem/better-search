@@ -18,7 +18,7 @@ interface SearchResultsProps {
 }
 
 /** The folder part of a path, trimmed to its last two folders, e.g. Documents\Resumes. */
-function parentOf(path: string) {
+export function parentOf(path: string) {
   const i = path.lastIndexOf("\\", path.length - 2);
   const parent = i <= 2 ? path.slice(0, i + 1) : path.slice(0, i);
   const parts = parent.split("\\").filter(Boolean);
@@ -144,7 +144,9 @@ function ResultRow({ result, index, active, registerItem, onOpen }: ResultRowPro
         >
           {result.name.replace(/\.lnk$/i, "")}
         </span>
-        <span className="truncate text-[10px] leading-3 text-zinc-500">{parentOf(result.path)}</span>
+        <span className="truncate text-[10px] leading-3 text-zinc-500">
+          {result.type === "app" ? "App" : parentOf(result.path)}
+        </span>
       </div>
     </div>
   );

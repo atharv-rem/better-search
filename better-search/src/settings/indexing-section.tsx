@@ -32,8 +32,9 @@ function timeAgo(unixSeconds: number) {
   return "just now";
 }
 
+/** In 1024s, like Explorer and the index location's "free on" line. */
 function gigabytes(bytes: number) {
-  return `${Math.round(bytes / 1e9).toLocaleString()} GB`;
+  return `${Math.round(bytes / 2 ** 30).toLocaleString()} GB`;
 }
 
 /** In 1024s, like Explorer shows file sizes. */
@@ -175,7 +176,11 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
             rebuild.kind === "asking" ? (
               "Waiting for permission…"
             ) : changed && !busy ? (
-              <span className="text-amber-300/90">Rebuild the index to apply your changes.</span>
+              // Search leaves out what's excluded straight away (helper's
+              // exclusions); what's included again needs reading in.
+              <span className="text-amber-300/90">
+                Rebuild the index to apply your changes. What you excluded is already left out of results.
+              </span>
             ) : undefined
           }
           error={rebuild.kind === "error" ? `Indexing failed: ${rebuild.message}` : rebuild.kind === "idle" ? rebuild.message : null}

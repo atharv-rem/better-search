@@ -28,6 +28,7 @@ const TEXT_EXTENSIONS = new Set([
 const DOCX_EXTENSIONS = new Set(["docx", "docm", "dotx", "dotm"]);
 
 async function loadUncached(result: SearchResult, thumbSize: number): Promise<Preview> {
+  if (result.type === "app") return { kind: "none" }; // no file to look into
   if (result.type === "directory") {
     const folder = await invoke<Omit<Extract<Preview, { kind: "folder" }>, "kind"> | null>("folder_preview", {
       path: result.path,

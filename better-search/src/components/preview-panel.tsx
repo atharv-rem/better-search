@@ -98,7 +98,9 @@ function PreviewContent({ result, preview }: { result: SearchResult; preview: Pr
     const text = preview.text.split("\n", TEXT_LINES).join("\n");
     return (
       <pre
-        className="h-full overflow-hidden px-2 py-1.5 font-mono text-[8px] leading-[11px] whitespace-pre text-zinc-300"
+        // Wrapped: the square is narrow, and a long first line cut at its
+        // edge hides most of what the file says.
+        className="h-full overflow-hidden px-2 py-1.5 font-mono text-[8px] leading-[11px] wrap-break-word whitespace-pre-wrap text-zinc-300"
         style={{ ...fadeBottom, tabSize: 2 }}
       >
         {text}

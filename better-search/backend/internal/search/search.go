@@ -22,9 +22,15 @@ type Result struct {
 	OpenCount  int64  `json:"open_count"`
 }
 
+// Skip reports whether a result is left out, by its full path; isDir says
+// whether it's a folder.
+type Skip func(path string, isDir bool) bool
+
 // Search returns files whose names contain every space-separated word in
 // query, best matches first. Cancelling ctx stops it, with ctx's error.
-func Search(ctx context.Context, db *database.DB, query string, limit int) ([]Result, error) {
+// skip, if not nil, leaves results out: those in a folder excluded since the
+// index was built, which stay in it until the next rebuild.
+func Search(ctx context.Context, db *database.DB, query string, limit int, skip Skip) ([]Result, error) {
 	query = strings.TrimSpace(query)
 	terms := strings.Fields(query)
 	if len(terms) == 0 {
@@ -34,8 +40,13 @@ func Search(ctx context.Context, db *database.DB, query string, limit int) ([]Re
 		limit = defaultLimit
 	}
 	limit = min(limit, maxLimit)
+	// Ask for more when some may be skipped, so a full page is still left.
+	fetch := limit
+	if skip != nil {
+		fetch = limit * 2
+	}
 
-	files, err := db.SearchNames(ctx, query, terms, limit)
+	files, err := db.SearchNames(ctx, query, terms, fetch)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +60,9 @@ func Search(ctx context.Context, db *database.DB, query string, limit int) ([]Re
 		path := paths[i]
 		if path == "" {
 			continue // its folders are missing; skip rather than show a wrong path
+		}
+		if skip != nil && skip(path, f.IsDir) {
+			continue
 		}
 		typ := "file"
 		if f.IsDir {
@@ -64,5 +78,6 @@ func Search(ctx context.Context, db *database.DB, query string, limit int) ([]Re
 			OpenCount:  f.OpenCount,
 		})
 	}
-	return preferShortcuts(results, query), nil
+	results = preferShortcuts(results, query)
+	return results[:min(len(results), limit)], nil
 }

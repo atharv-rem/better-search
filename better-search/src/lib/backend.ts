@@ -9,10 +9,14 @@ export interface SearchResult {
   id: number;
   name: string;
   path: string;
-  type: "file" | "directory";
+  /** "app": a Start menu app listed with the files (App.tsx), not from the
+   *  index; `path` is its "shell:AppsFolder\…" address. */
+  type: "file" | "directory" | "app";
   size: number;
   modified_at: number;
   open_count: number;
+  /** An app's id in the Apps folder (snap.rs `InstalledApp`). */
+  app_id?: string;
 }
 
 export interface IndexStatus {

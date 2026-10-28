@@ -80,6 +80,11 @@ export const SearchBox = forwardRef<HTMLDivElement, SearchBoxProps>(
         {/* The ghost sits on a copy of the text laid out like the textarea's,
             so it starts where the typing ends, wrapped lines and all. */}
         <div className="relative">
+          {/* The ghost is drawing only; screen readers get the answer here.
+              Always there, as a live region has to exist before it changes. */}
+          <span role="status" className="sr-only">
+            {ghost ?? ""}
+          </span>
           {ghost && (
             <div
               aria-hidden

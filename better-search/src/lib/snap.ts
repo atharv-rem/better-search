@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SearchResult } from "@/lib/backend";
 
 /** A window as Alt+Tab lists it (snap.rs `OpenWindow`). */
 export interface OpenWindow {
@@ -16,10 +17,15 @@ export interface InstalledApp {
   name: string;
 }
 
-/** What goes in a zone: an open window, or an app launched for it. */
-export type SnapPick = { kind: "window"; window: OpenWindow } | { kind: "app"; app: InstalledApp };
+/** What goes in a zone: an open window, or an app launched or a file opened
+ *  for it. */
+export type SnapPick =
+  | { kind: "window"; window: OpenWindow }
+  | { kind: "app"; app: InstalledApp }
+  | { kind: "file"; file: SearchResult };
 
-export const pickKey = (p: SnapPick) => (p.kind === "window" ? `window:${p.window.id}` : `app:${p.app.id}`);
+export const pickKey = (p: SnapPick) =>
+  p.kind === "window" ? `window:${p.window.id}` : p.kind === "app" ? `app:${p.app.id}` : `file:${p.file.path}`;
 
 /** Part of the screen, as fractions of its work area (0 to 1). */
 export interface Zone {
@@ -67,22 +73,43 @@ export function filterWindows(windows: OpenWindow[], query: string) {
 /** Apps listed under the windows once something is typed. */
 const APPS_SHOWN = 20;
 
+/** How an app's name matches `q` (lower-cased): 0 it starts with it, 1 a word
+ *  in it does, 2 it's somewhere inside; -1 not at all. */
+function appRank(name: string, q: string) {
+  const n = name.toLowerCase();
+  if (n.startsWith(q)) return 0;
+  if (n.split(/[\s\-_.]+/).some((word) => word.startsWith(q))) return 1;
+  return n.includes(q) ? 2 : -1;
+}
+
 /** Apps whose name contains what's typed: names that start with it first,
  *  then a word in them that does. None while nothing is typed. */
 export function filterApps(apps: InstalledApp[], query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const rank = (name: string) => {
-    const n = name.toLowerCase();
-    if (n.startsWith(q)) return 0;
-    if (n.split(/[\s\-_.]+/).some((word) => word.startsWith(q))) return 1;
-    return n.includes(q) ? 2 : -1;
-  };
   return apps
-    .map((app) => ({ app, rank: rank(app.name) }))
+    .map((app) => ({ app, rank: appRank(app.name, q) }))
     .filter((a) => a.rank >= 0)
     .sort((a, b) => a.rank - b.rank)
     .slice(0, APPS_SHOWN)
+    .map((a) => a.app);
+}
+
+/** Apps listed above the files in a search. */
+const APPS_IN_SEARCH = 3;
+
+/** The apps a file search lists first: only names that start with what's
+ *  typed, or have a word that does ("code" finds Visual Studio Code), so an
+ *  app doesn't push files down for a word that's merely inside its name. An
+ *  exact name leads, then shorter names. */
+export function appsMatching(apps: InstalledApp[], query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return apps
+    .map((app) => ({ app, rank: appRank(app.name, q), exact: app.name.toLowerCase() === q }))
+    .filter((a) => a.rank === 0 || a.rank === 1)
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || a.rank - b.rank || a.app.name.length - b.app.name.length)
+    .slice(0, APPS_IN_SEARCH)
     .map((a) => a.app);
 }
 
@@ -94,13 +121,20 @@ export function installedApps() {
   return invoke<InstalledApp[]>("installed_apps");
 }
 
-/** Moves each window into its zone, launching the apps picked for zones
- *  first; zones left empty are skipped. Rust hides the search first. */
+/** Moves each window into its zone, launching the apps and opening the files
+ *  picked for zones first; zones left empty are skipped. Rust hides the
+ *  search first. */
 export function snapWindows(layout: SnapLayout, assigned: (SnapPick | null)[]) {
   const placements = layout.zones.flatMap((z, i) => {
     const pick = assigned[i];
     if (!pick) return [];
-    return [pick.kind === "window" ? { id: pick.window.id, app: null, ...z } : { id: null, app: pick.app.id, ...z }];
+    const what =
+      pick.kind === "window"
+        ? { id: pick.window.id, app: null, file: null }
+        : pick.kind === "app"
+          ? { id: null, app: pick.app.id, file: null }
+          : { id: null, app: null, file: pick.file.path };
+    return [{ ...what, ...z }];
   });
   if (!placements.length) return Promise.resolve();
   return invoke("snap_windows", { placements });

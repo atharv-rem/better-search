@@ -612,6 +612,23 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// Starts the uninstaller the NSIS installer put next to the app. It asks
+/// before removing anything and stops the app itself (hooks.nsh), so the app
+/// keeps running in case the user cancels. Without one (an MSI install, or a
+/// dev build) Windows' Installed apps page opens instead.
+#[tauri::command]
+fn uninstall_app(app: AppHandle) -> Result<(), String> {
+    let uninstaller = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name("uninstall.exe");
+    if uninstaller.is_file() {
+        return std::process::Command::new(uninstaller).spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
+    app.opener()
+        .open_url("ms-settings:appsfeatures", None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn open_logs_folder(app: AppHandle) -> Result<(), String> {
     let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
@@ -701,6 +718,13 @@ fn open_result(window: WebviewWindow, path: String, reveal: bool) -> Result<(), 
         opener.open_path(&path, None::<&str>)
     }
     .map_err(|e| e.to_string())
+}
+
+/// Launches an app from the Start menu's list (`snap::installed_apps`), Store
+/// apps included, which have no file to open.
+#[tauri::command]
+fn open_app(window: WebviewWindow, id: String) -> Result<(), String> {
+    open_file(&window, &format!("shell:AppsFolder\\{id}"))
 }
 
 /// Opens a file as the opener plugin does, but with the search window as the
@@ -968,6 +992,29 @@ fn image_response(image: Option<Vec<u8>>) -> tauri::ipc::Response {
     tauri::ipc::Response::new(image.unwrap_or_default())
 }
 
+/// Whether a file's contents live only elsewhere: a OneDrive "online-only"
+/// file, or one in Phone Link's CrossDevice folder, which is on the phone.
+/// Reading one makes the sync app download it, just because it
+/// was selected in the results, and Explorer then fails to move or delete it
+/// while that runs, so previews leave its contents alone. Its attributes come
+/// from the placeholder itself, which reading them doesn't download.
+#[cfg(windows)]
+pub(crate) fn is_cloud_only(path: &str) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+    const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
+    const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    std::fs::metadata(path).is_ok_and(|m| {
+        m.file_attributes() & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+            != 0
+    })
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_cloud_only(_path: &str) -> bool {
+    false
+}
+
 /// The Explorer icon for a path as a PNG. Runs off the main thread: the shell
 /// may touch the disk.
 #[cfg(windows)]
@@ -986,10 +1033,11 @@ fn shell_icon_png(path: &str) -> Option<Vec<u8>> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::DeleteObject;
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 
-    unsafe {
+    let icon_png = || unsafe {
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
         let mut info = SHFILEINFOW::default();
         let got = SHGetFileInfoW(
@@ -1012,6 +1060,16 @@ fn shell_icon_png(path: &str) -> Option<Vec<u8>> {
         }
         let _ = DestroyIcon(info.hIcon);
         png
+    };
+
+    unsafe {
+        // SHGetFileInfoW needs COM, and this is a blocking-pool thread.
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let png = icon_png();
+        if com {
+            CoUninitialize();
+        }
+        png
     }
 }
 
@@ -1024,7 +1082,13 @@ async fn file_thumbnail(path: String, size: u32) -> tauri::ipc::Response {
     image_response(
         tauri::async_runtime::spawn_blocking(move || {
             let size = size.clamp(16, 1024);
-            shell_thumbnail(&path, size).or_else(|| {
+            // A cloud-only file gets only a thumbnail Windows already has:
+            // making one would download it, from a phone (Phone Link's
+            // CrossDevice folder) that may not even be connected.
+            if is_cloud_only(&path) {
+                return shell_thumbnail(&path, size, true);
+            }
+            shell_thumbnail(&path, size, false).or_else(|| {
                 // Without Acrobat or a similar app, Windows has no PDF thumbnails.
                 path.to_lowercase().ends_with(".pdf").then(|| pdf_first_page(&path, size)).flatten()
             })
@@ -1036,12 +1100,16 @@ async fn file_thumbnail(path: String, size: u32) -> tauri::ipc::Response {
 }
 
 #[cfg(windows)]
-fn shell_thumbnail(path: &str, size: u32) -> Option<Vec<u8>> {
+fn shell_thumbnail(path: &str, size: u32, cached_only: bool) -> Option<Vec<u8>> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::DeleteObject;
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-    use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_THUMBNAILONLY};
+    use windows::Win32::UI::Shell::{
+        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_INCACHEONLY, SIIGBF_THUMBNAILONLY,
+    };
+
+    let flags = if cached_only { SIIGBF_THUMBNAILONLY | SIIGBF_INCACHEONLY } else { SIIGBF_THUMBNAILONLY };
 
     unsafe {
         // Thumbnail providers are COM objects; this is a blocking-pool thread.
@@ -1050,7 +1118,7 @@ fn shell_thumbnail(path: &str, size: u32) -> Option<Vec<u8>> {
         let image = SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(PCWSTR(wide.as_ptr()), None)
             .and_then(|factory| {
                 let side = size as i32;
-                factory.GetImage(SIZE { cx: side, cy: side }, SIIGBF_THUMBNAILONLY)
+                factory.GetImage(SIZE { cx: side, cy: side }, flags)
             })
             .ok()
             .and_then(|bitmap| {
@@ -1192,6 +1260,9 @@ const TEXT_PREVIEW_BYTES: u64 = 8 * 1024;
 async fn text_preview(path: String) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
         use std::io::Read;
+        if is_cloud_only(&path) {
+            return None;
+        }
         let mut buf = Vec::new();
         std::fs::File::open(&path)
             .ok()?
@@ -1390,6 +1461,7 @@ pub fn run() {
             backend_request,
             search_state,
             open_result,
+            open_app,
             open_url,
             list_browsers,
             file_icon,
@@ -1400,6 +1472,7 @@ pub fn run() {
             memory_usage,
             open_settings,
             quit_app,
+            uninstall_app,
             open_logs_folder,
             logs::recent_problems,
             can_update,
@@ -1481,4 +1554,30 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_files_are_not_cloud_only() {
+        assert!(!is_cloud_only(file!()));
+        assert!(!is_cloud_only(r"C:\no\such\file.pdf"));
+    }
+
+    /// Needs a cloud-only file on this machine (a OneDrive "online-only" one,
+    /// or one in Phone Link's CrossDevice folder) in BS_CLOUD_ONLY_FILE;
+    /// skipped without one.
+    #[test]
+    fn previews_leave_cloud_only_files_alone() {
+        use tauri::async_runtime::block_on;
+        let Ok(path) = std::env::var("BS_CLOUD_ONLY_FILE") else { return };
+        assert!(is_cloud_only(&path), "{path} isn't cloud-only");
+        assert!(block_on(text_preview(path.clone())).is_none());
+        assert!(block_on(docx::docx_preview(path.clone())).is_none());
+        block_on(file_thumbnail(path.clone(), 256));
+        // Still a placeholder: nothing above downloaded it.
+        assert!(is_cloud_only(&path), "{path} was downloaded");
+    }
 }

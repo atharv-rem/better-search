@@ -168,6 +168,11 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     if !(1..=2).contains(&n) || !s.web.trigger.chars().all(|c| c.is_ascii_punctuation()) {
         return Err("The web search shortcut has to be one or two symbols, like / or ?".into());
     }
+    // "=" starts a calculation; as the trigger it would turn every one into a
+    // web search.
+    if s.web.trigger.starts_with('=') {
+        return Err("= is the calculator's; pick another symbol for web search".into());
+    }
 
     let mut folders: Vec<String> = Vec::new();
     for f in &s.indexing.excluded_folders {
@@ -317,4 +322,30 @@ pub fn list_drives() -> Vec<Drive> {
 #[tauri::command]
 pub fn list_drives() -> Vec<Drive> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_trigger(trigger: &str) -> Result<Settings, String> {
+        let mut s = Settings::default();
+        s.web.trigger = trigger.into();
+        validate(s)
+    }
+
+    #[test]
+    fn web_trigger_is_one_or_two_symbols() {
+        assert_eq!(with_trigger(" ?? ").unwrap().web.trigger, "??");
+        assert!(with_trigger("").is_err());
+        assert!(with_trigger("abc").is_err());
+        assert!(with_trigger("///").is_err());
+    }
+
+    #[test]
+    fn web_trigger_leaves_the_calculator_its_equals() {
+        assert!(with_trigger("=").is_err());
+        assert!(with_trigger("=/").is_err());
+        assert!(with_trigger("/=").is_ok());
+    }
 }

@@ -142,6 +142,9 @@ fn paragraphs(xml: &str) -> Vec<Paragraph> {
 }
 
 fn preview(path: &str) -> Option<DocxPreview> {
+    if crate::is_cloud_only(path) {
+        return None;
+    }
     let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
     if let Some(url) = saved_thumbnail(&mut zip) {
         return Some(DocxPreview::Image { url });

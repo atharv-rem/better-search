@@ -3,7 +3,8 @@ import { AppWindowIcon } from "@/lib/phosphor";
 import { cn } from "@/lib/utils";
 import { fontWeights } from "@/lib/font-weight";
 import { panelShadow, shortcutPill } from "@/lib/surface-classes";
-import { loadIcon } from "@/components/file-icon";
+import { FileIcon, loadIcon } from "@/components/file-icon";
+import { parentOf } from "@/components/search-results";
 import { imageCache } from "@/lib/image-cache";
 import { LAYOUTS, pickKey, programName, type InstalledApp, type OpenWindow, type SnapPick, type Zone } from "@/lib/snap";
 import type { Snap } from "@/hooks/use-snap";
@@ -89,9 +90,10 @@ function LayoutStrip({ snap }: { snap: Snap }) {
   );
 }
 
-/** What a zone shows for what's in it: the program's name, or the app's. */
+/** What a zone shows for what's in it: the program's name, the app's, or the file's. */
 function pickLabel(pick: SnapPick) {
-  return pick.kind === "window" ? programName(pick.window.exe) || pick.window.title : pick.app.name;
+  if (pick.kind === "window") return programName(pick.window.exe) || pick.window.title;
+  return pick.kind === "app" ? pick.app.name : pick.file.name;
 }
 
 function ZonePreview({ snap }: { snap: Snap }) {
@@ -133,7 +135,7 @@ function ZonePreview({ snap }: { snap: Snap }) {
             {snap.layout.name}
           </span>
           <span className="text-[11px] leading-4 text-zinc-400">
-            Pick a window or app for zone {snap.zone + 1} of {snap.layout.zones.length}
+            Pick a window, app or file for zone {snap.zone + 1} of {snap.layout.zones.length}
           </span>
         </div>
         <Keys
@@ -151,7 +153,7 @@ function ZonePreview({ snap }: { snap: Snap }) {
 }
 
 /** Below the bar: the open windows, narrowed by what's typed, then the
- *  installed apps that match it. */
+ *  installed apps and the indexed files that match it. */
 export function WindowList({ snap, maxHeight }: { snap: Snap; maxHeight: number }) {
   const listRef = useRef<HTMLDivElement>(null);
   const { active } = snap;
@@ -163,7 +165,7 @@ export function WindowList({ snap, maxHeight }: { snap: Snap; maxHeight: number 
   if (!snap.visible.length) {
     return (
       <p className="p-3 text-[12px] leading-4 text-zinc-400">
-        {snap.query.trim() ? "No open windows or apps match." : "No open windows to snap. Type to find an app."}
+        {snap.query.trim() ? "No open windows, apps or files match." : "No open windows to snap. Type to find an app or file."}
       </p>
     );
   }
@@ -171,7 +173,7 @@ export function WindowList({ snap, maxHeight }: { snap: Snap; maxHeight: number 
     <div
       ref={listRef}
       role="listbox"
-      aria-label="Open windows and apps"
+      aria-label="Open windows, apps and files"
       className="flex flex-col overflow-y-auto p-1.5"
       style={{ maxHeight }}
     >
@@ -179,15 +181,20 @@ export function WindowList({ snap, maxHeight }: { snap: Snap; maxHeight: number 
         const key = pickKey(pick);
         const zones = snap.phase === "zones" ? snap.assigned.flatMap((a, z) => (a && pickKey(a) === key ? [z + 1] : [])) : [];
         const selected = i === active;
-        const title = pick.kind === "window" ? pick.window.title : pick.app.name;
-        const detail = pick.kind === "window" ? programName(pick.window.exe) : "App · opens in its zone";
+        const title = pick.kind === "window" ? pick.window.title : pickLabel(pick);
+        const detail =
+          pick.kind === "window"
+            ? programName(pick.window.exe)
+            : pick.kind === "app"
+              ? "App · opens in its zone"
+              : `${parentOf(pick.file.path)} · opens in its zone`;
         return (
           <div
             key={key}
             data-index={i}
             role="option"
             aria-selected={selected}
-            title={pick.kind === "window" ? pick.window.exe || undefined : undefined}
+            title={pick.kind === "window" ? pick.window.exe || undefined : pick.kind === "file" ? pick.file.path : undefined}
             onMouseMove={() => !selected && snap.setActive(i)}
             onClick={() => (snap.phase === "zones" ? snap.assign(pick) : snap.setActive(i))}
             className={cn(
@@ -218,7 +225,8 @@ export function WindowList({ snap, maxHeight }: { snap: Snap; maxHeight: number 
 }
 
 function PickIcon({ pick, size }: { pick: SnapPick; size: number }) {
-  return pick.kind === "window" ? <WindowIcon window={pick.window} size={size} /> : <AppIcon app={pick.app} size={size} />;
+  if (pick.kind === "window") return <WindowIcon window={pick.window} size={size} />;
+  return pick.kind === "app" ? <AppIcon app={pick.app} size={size} /> : <FileIcon result={pick.file} size={size} />;
 }
 
 // Installed apps' icons by app id (null: none).

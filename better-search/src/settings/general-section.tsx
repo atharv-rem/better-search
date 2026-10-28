@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as autostartEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowCounterClockwiseIcon, MinusIcon, PlusIcon, PowerIcon } from "@/lib/phosphor";
+import { ArrowCounterClockwiseIcon, MinusIcon, PlusIcon, PowerIcon, TrashIcon } from "@/lib/phosphor";
 import { DEFAULT_SETTINGS, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, type Settings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { ActionButton, Group, Keys, keysOf, Row, Switch } from "@/settings/controls";
+import { keepOpenFor } from "@/settings/keep-open";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
 
@@ -28,8 +29,32 @@ export function GeneralSection({ settings, save }: { settings: Settings; save: S
             Quit
           </ActionButton>
         </Row>
+        <UninstallRow />
       </Group>
     </>
+  );
+}
+
+/** Starts Windows' uninstaller for the app (`uninstall_app`), which asks
+ *  before removing anything. */
+function UninstallRow() {
+  const [error, setError] = useState<string | null>(null);
+  const uninstall = () => {
+    setError(null);
+    keepOpenFor();
+    invoke("uninstall_app").catch((err) => setError(`Couldn't start the uninstaller: ${err}`));
+  };
+  return (
+    <Row
+      label="Uninstall Better Search"
+      description="Removes the app. The uninstaller asks whether to delete your settings and search index too."
+      error={error}
+    >
+      <ActionButton variant="danger" onClick={uninstall}>
+        <TrashIcon size={14} />
+        Uninstall
+      </ActionButton>
+    </Row>
   );
 }
 

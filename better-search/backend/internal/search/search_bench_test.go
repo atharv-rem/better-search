@@ -31,7 +31,7 @@ func BenchmarkSearch(b *testing.B) {
 	for _, q := range benchQueries {
 		b.Run(q, func(b *testing.B) {
 			for b.Loop() {
-				if _, err := Search(ctx, db, q, 50); err != nil {
+				if _, err := Search(ctx, db, q, 50, nil); err != nil {
 					b.Fatal(err)
 				}
 			}

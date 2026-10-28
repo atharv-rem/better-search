@@ -22,6 +22,7 @@ import { TypeFilter } from "@/components/type-filter";
 import { SnapHeader, WindowList } from "@/components/snap-picker";
 import { useSnap } from "@/hooks/use-snap";
 import { countGroups, groupOf, type FileGroup } from "@/lib/file-groups";
+import { appsMatching, installedApps, type InstalledApp } from "@/lib/snap";
 import { cn } from "@/lib/utils";
 import { usePendingUpdate } from "@/lib/update";
 import { panelShadow, shortcutPill } from "@/lib/surface-classes";
@@ -49,6 +50,29 @@ const SEARCH_DEBOUNCE_MS = 100;
 /** Recent searches listed: file searches under the empty search box, web
  *  searches ("/ cats") under the web-search row while only "/" is typed. */
 const RECENT_SHOWN = 5;
+
+/** The Start menu apps that match `query` above the files, the files'
+ *  shortcuts to those same apps left out. The index only has apps that have
+ *  a shortcut file; Store apps (Calculator, Settings) have none. */
+function withApps(files: SearchResult[], apps: InstalledApp[], query: string, limit: number): SearchResult[] {
+  const matched = appsMatching(apps, query);
+  if (!matched.length) return files;
+  const names = new Set(matched.map((a) => a.name.toLowerCase()));
+  const isListedApp = (f: SearchResult) => /\.lnk$/i.test(f.name) && names.has(f.name.slice(0, -4).toLowerCase());
+  const listed = matched.map(
+    (app, i): SearchResult => ({
+      id: -1 - i, // not in the index
+      name: app.name,
+      path: `shell:AppsFolder\\${app.id}`,
+      type: "app",
+      size: 0,
+      modified_at: 0,
+      open_count: 0,
+      app_id: app.id,
+    })
+  );
+  return [...listed, ...files.filter((f) => !isListedApp(f))].slice(0, limit);
+}
 
 /** "/ cats" searches the web for "cats"; null for an ordinary file search.
  *  `trigger` is the user's web search shortcut ("/" by default). */
@@ -225,6 +249,8 @@ function App() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [typeFilter, setTypeFilter] = useState<FileGroup | null>(null);
+  // Set when the window comes back; the next new query drops the type filter.
+  const reshown = useRef(false);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [index, setIndex] = useState<IndexState>({ kind: "checking" });
   const settings = useSettings() ?? DEFAULT_SETTINGS;
@@ -408,6 +434,8 @@ function App() {
       // starts a new search, or clear it if the settings say so.
       if (settingsRef.current.search.clear_on_close) setQuery("");
       else searchRef.current?.querySelector("textarea")?.select();
+      // The type filter goes with that search: typing a new one shows all.
+      reshown.current = true;
       setShownAt(Date.now());
     });
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -449,6 +477,23 @@ function App() {
 
   // Search as you type, once typing pauses for SEARCH_DEBOUNCE_MS. Only the
   // newest request's answer is shown.
+  // The Start menu's apps, listed with the files. Read again on each show, as
+  // apps get installed and removed.
+  const apps = useRef<InstalledApp[]>([]);
+  useEffect(() => {
+    if (!shownAt) return;
+    installedApps()
+      .then((a) => (apps.current = a))
+      .catch(() => {});
+  }, [shownAt]);
+
+  useEffect(() => {
+    if (reshown.current) {
+      reshown.current = false;
+      setTypeFilter(null);
+    }
+  }, [query]);
+
   useEffect(() => {
     const seq = ++searchSeq.current;
     if (!ready || !query.trim() || webQueryOf(query, trigger) !== null || calcQueryOf(query) !== null || urlOf(query) !== null) {
@@ -461,8 +506,9 @@ function App() {
       const started = performance.now();
       backend
         .search(query, maxResults)
-        .then((r) => {
+        .then((found) => {
           if (seq !== searchSeq.current) return;
+          const r = withApps(found, apps.current, query, maxResults);
           setSearchMs(Math.max(1, Math.round(performance.now() - started)));
           setResults(r);
           setActiveIndex(r.length ? 0 : null);
@@ -503,11 +549,16 @@ function App() {
     if (opening.current) return;
     opening.current = true;
     remember(queryRef.current);
-    // Recorded for ranking without waiting: hiding only trims the backend,
-    // which still answers it.
-    backend.markOpened(r.id).catch(() => {});
     try {
-      await invoke("open_result", { path: r.path, reveal });
+      if (r.type === "app") {
+        // Not a file: nothing to reveal, and nothing in the index to rank.
+        await invoke("open_app", { id: r.app_id });
+      } else {
+        // Recorded for ranking without waiting: hiding only trims the
+        // backend, which still answers it.
+        backend.markOpened(r.id).catch(() => {});
+        await invoke("open_result", { path: r.path, reveal });
+      }
     } catch (err) {
       console.error("Failed to open:", err);
       return;
@@ -701,6 +752,7 @@ function App() {
       const step = e.shiftKey ? -1 : 1;
       const at = order.indexOf(activeFilter);
       setTypeFilter(order[(at + step + order.length) % order.length]);
+      reshown.current = false;
       setActiveIndex(0);
     } else if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -887,6 +939,7 @@ function App() {
             selected={activeFilter}
             onSelect={(g) => {
               setTypeFilter(g);
+              reshown.current = false;
               setActiveIndex(0);
             }}
           />
@@ -925,14 +978,24 @@ function App() {
                     }}
                     className="flex min-w-0 flex-1 items-center gap-2 p-3 pr-0 text-left text-[12px] leading-4"
                   >
-                    <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
-                    <span className="truncate">
-                      {!webQuery
-                        ? "Type something to search the web"
-                        : provider
-                          ? `Search ${provider.name} for “${webQuery}”`
-                          : `Search the web for “${webQuery}”`}
-                    </span>
+                    {webQuery && provider ? (
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="shrink-0">Search</span>
+                        <span className="grid size-4 shrink-0 place-items-center rounded-[4px] bg-white">
+                          <img src={provider.logo} alt="" className="size-3 object-contain" draggable={false} />
+                        </span>
+                        <span className="truncate">
+                          {provider.name} for {webQuery}
+                        </span>
+                      </span>
+                    ) : (
+                      <>
+                        <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
+                        <span className="truncate">
+                          {webQuery ? `Search the web for “${webQuery}”` : "Type something to search the web"}
+                        </span>
+                      </>
+                    )}
                   </button>
                   {browserMenu}
                 </div>

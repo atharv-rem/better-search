@@ -39,6 +39,7 @@ export function extensionOf(name: string) {
 
 export function groupOf(result: SearchResult): FileGroup {
   if (result.type === "directory") return "folders";
+  if (result.type === "app") return "apps";
   return GROUP_BY_EXTENSION.get(extensionOf(result.name)) ?? "other";
 }
 

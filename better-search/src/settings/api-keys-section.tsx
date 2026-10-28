@@ -62,7 +62,15 @@ export function ApiKeysSection({ settings, save }: { settings: Settings; save: S
                 label: "Open in browser",
                 icon: <GlobeIcon size={14} />,
               },
-              ...withKey.map((p) => ({ value: p.id, label: p.name })),
+              ...withKey.map((p) => ({
+                value: p.id,
+                label: p.name,
+                icon: (
+                  <span className="grid size-3.5 shrink-0 place-items-center rounded-[3px] bg-white">
+                    <img src={p.logo} alt="" className="size-2.5 object-contain" draggable={false} />
+                  </span>
+                ),
+              })),
             ]}
             onChange={chooseProvider}
           />
