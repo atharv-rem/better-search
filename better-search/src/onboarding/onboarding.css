@@ -1,13 +1,4 @@
-/* The first-run screen: the home page's red glow on black, a step at a time. */
-.ob-glow {
-  background: radial-gradient(ellipse 90% 80% at 50% 110%, rgba(220, 38, 38, 0.5) 0%, rgba(153, 27, 27, 0.28) 40%, rgba(0, 0, 0, 0) 75%);
-}
-
-.ob-dots {
-  background-image: radial-gradient(circle at center, #fff 1px, transparent 1px);
-  background-size: 4px 4px;
-  opacity: 0.035;
-}
+/* The first-run screen: a step at a time on the red arc bands. */
 
 /* A soft sheen that travels along the filled part of the bar. */
 .ob-bar {
@@ -16,37 +7,26 @@
   animation: ob-sheen 1.8s linear infinite;
 }
 
-.ob-ring {
-  stroke-dasharray: 164;
-  stroke-dashoffset: 164;
-  animation: ob-draw 0.7s cubic-bezier(0.3, 0.7, 0.3, 1) forwards;
-}
-
-.ob-check {
-  stroke-dasharray: 40;
-  stroke-dashoffset: 40;
-  animation: ob-draw 0.45s 0.5s ease-out forwards;
-}
-
-@keyframes ob-draw {
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
 @keyframes ob-sheen {
   to {
     background-position: -200% 0;
   }
 }
 
+/* The steps rail's current step (milestone-rail.tsx): a ring that swells and fades. */
+@keyframes rail-pulse {
+  from {
+    scale: 1;
+    opacity: 0.25;
+  }
+  to {
+    scale: 1.7;
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ob-bar {
     animation: none;
-  }
-  .ob-ring,
-  .ob-check {
-    animation: none;
-    stroke-dashoffset: 0;
   }
 }

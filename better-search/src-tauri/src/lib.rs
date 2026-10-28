@@ -68,6 +68,7 @@ fn start_backend(app: &AppHandle) {
         }
     };
     let pid = child.pid();
+    tie_to_app(pid);
     *current = Some(child);
 
     // Each stdout line is one JSON message: a reply goes to the request
@@ -146,6 +147,7 @@ fn start_watcher(app: &AppHandle) {
         }
     };
     let pid = child.pid();
+    tie_to_app(pid);
     *current = Some(child);
 
     let app = app.clone();
@@ -190,6 +192,56 @@ fn stop_backend(app: &AppHandle) {
         app.state::<PendingReplies>().0.lock().unwrap().clear();
     }
 }
+
+/// Puts a sidecar in a job that Windows closes when this process ends, which
+/// ends the sidecar too. Quitting stops them anyway; this is for when the app
+/// is killed (the uninstaller, Task Manager, a crash), which would otherwise
+/// leave them running with their files locked.
+#[cfg(windows)]
+fn tie_to_app(pid: u32) {
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    // Never closed: the handle has to live exactly as long as the process.
+    static JOB: OnceLock<Option<usize>> = OnceLock::new();
+    let job = JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(None, None).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if let Err(e) = set {
+            log::error!("Failed to set up the sidecars' job: {e}");
+            let _ = CloseHandle(job);
+            return None;
+        }
+        Some(job.0 as usize)
+    });
+    let Some(job) = *job else { return };
+    unsafe {
+        match OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) {
+            Ok(process) => {
+                if let Err(e) = AssignProcessToJobObject(HANDLE(job as *mut _), process) {
+                    log::error!("Failed to tie sidecar {pid} to the app: {e}");
+                }
+                let _ = CloseHandle(process);
+            }
+            Err(e) => log::error!("Failed to open sidecar {pid}: {e}"),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn tie_to_app(_pid: u32) {}
 
 /// While hidden, ask WebView2 to give memory back (it discards caches and lets
 /// Windows page out the rest) and suspend the page; restore normal behaviour
@@ -534,6 +586,9 @@ pub fn scale_settings_window(app: &AppHandle, scale: f64) {
 /// index and says when it's done. Opened on start until the user has been
 /// through it (`Settings::onboarded`).
 const ONBOARDING_LABEL: &str = "onboarding";
+/// 720x410 of page (two 360px halves: the step, and the steps rail), plus
+/// the 24px each side its shadow is drawn in.
+const ONBOARDING_SIZE: (f64, f64) = (768.0, 458.0);
 
 fn open_onboarding(app: &AppHandle) {
     if app.get_webview_window(ONBOARDING_LABEL).is_some() {
@@ -543,7 +598,7 @@ fn open_onboarding(app: &AppHandle) {
     // Building a webview waits on the main thread, so do it from another task.
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = build_panel(&app, ONBOARDING_LABEL, "Welcome to Better Search", 560.0, 460.0) {
+        if let Err(e) = build_panel(&app, ONBOARDING_LABEL, "Welcome to Better Search", ONBOARDING_SIZE.0, ONBOARDING_SIZE.1) {
             log::error!("Failed to open the first-run screen: {e}");
         }
     });
@@ -1377,8 +1432,11 @@ pub fn run() {
                 settings::register_shortcut(app.handle(), settings::DEFAULT_SHORTCUT)?;
             }
             let first_run = !saved.onboarded;
+            // `VITE_ONBOARDING=<screen> npm run tauri dev` shows the first-run
+            // screen anyway, on that step (onboarding-window.tsx). Dev only.
+            let preview = cfg!(debug_assertions) && std::env::var_os("VITE_ONBOARDING").is_some();
             app.manage(SettingsState(Mutex::new(saved)));
-            if first_run {
+            if first_run || preview {
                 open_onboarding(app.handle());
             }
             start_watcher(app.handle());

@@ -21,6 +21,32 @@
   nsExec::Exec 'taskkill /F /IM better-search-helper.exe'
   nsExec::Exec 'taskkill /F /IM better-search-watcher.exe'
   nsExec::Exec 'taskkill /F /IM better-search-indexer.exe'
+
+  ; The installer's check asks Restart Manager who has the app's exe open, and
+  ; gives up ("Failed to kill") if anything does, even an antivirus service
+  ; that keeps a scan handle on it (McAfee does) and can't be closed. Those
+  ; handles still allow deleting, so remove the programs here, retrying while
+  ; the killed ones finish exiting (taskkill returns before they have): the
+  ; check then has no file to ask about, and none is left locked for the
+  ; uninstaller to skip. Installing puts the new ones in their place.
+  StrCpy $R1 0
+  ${Do}
+    Delete "$INSTDIR\better-search.exe"
+    Delete "$INSTDIR\better-search-helper.exe"
+    Delete "$INSTDIR\better-search-watcher.exe"
+    Delete "$INSTDIR\better-search-indexer.exe"
+    ${IfNot} ${FileExists} "$INSTDIR\better-search.exe"
+    ${AndIfNot} ${FileExists} "$INSTDIR\better-search-helper.exe"
+    ${AndIfNot} ${FileExists} "$INSTDIR\better-search-watcher.exe"
+    ${AndIfNot} ${FileExists} "$INSTDIR\better-search-indexer.exe"
+      ${ExitDo}
+    ${EndIf}
+    ${If} $R1 >= 40
+      ${ExitDo}
+    ${EndIf}
+    Sleep 250
+    IntOp $R1 $R1 + 1
+  ${Loop}
 !macroend
 
 ; The search index goes in the user's local app data folder (on C:), and the

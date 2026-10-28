@@ -73,6 +73,8 @@ windows = { version = "0.62", features = [
     # Search providers' API keys, kept in Credential Manager.
     "Win32_Security_Credentials",
     "Win32_System_Com",
+    # Sidecars end with the app, even when it's killed (tie_to_app).
+    "Win32_System_JobObjects",
     # The app's own processes, for the memory readout and the trim on hide.
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
