@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/atharv-rem/better-search/compare/v0.4.1...v0.5.0) (2026-10-28)
+
+
+### Features
+
+* enhance snap functionality to support file openings alongside apps ([9574fc6](https://github.com/atharv-rem/better-search/commit/9574fc6b2c6b4488de0c7ea62de95d2beabb4fae))
+
 ## [0.4.1](https://github.com/atharv-rem/better-search/compare/v0.4.0...v0.4.1) (2026-10-28)
 
 
