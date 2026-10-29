@@ -10,6 +10,7 @@ Better Search reads your drives' file list once and keeps it up to date in the b
 
 - **Every drive, instantly.** Finds any file or folder on your NTFS drives by any part of its name. Several words narrow the search (`invoice 2024`).
 - **Inside files.** Start with `\` to find files by the words in them, like `\ tax notes`. It asks Windows Search, which already indexes your documents' contents, so it adds no index of its own and nothing leaves your computer. Choose which folders Windows indexes from settings; you can change the symbol there too.
+- **Text in images.** Optionally, Better Search reads the words in your screenshots and photos with Windows' own text recognition, so a content search finds them too. Turn it on during setup or later in settings, pick the folders, and delete what it stored at any time. It's kept apart from the file index.
 - **Apps too.** Lists your Start menu apps alongside your files.
 - **Smart ranking.** Exact names come first, then apps, shortcuts and folders. Files you open often rise to the top.
 - **File type filters.** Press **Tab** to narrow results to folders, documents, images, videos, audio, code, archives or apps.

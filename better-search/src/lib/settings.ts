@@ -39,6 +39,12 @@ export interface Settings {
     /** Full paths, or folder names skipped wherever they are. */
     excluded_folders: string[];
   };
+  /** Reading the text in images with Windows' OCR, for content search. */
+  images: {
+    enabled: boolean;
+    /** Empty for the user's Desktop, Documents, Pictures and Downloads. */
+    folders: string[];
+  };
   /** The search window's zoom, on top of Windows' display scaling: 1 is
    *  100%. The shell keeps it within `UI_SCALE_MIN`..`UI_SCALE_MAX`. */
   ui_scale: number;
@@ -65,6 +71,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   web: { engine: "google", custom_url: "", browser: "default", provider: "browser", trigger: DEFAULT_WEB_TRIGGER },
   indexing: { excluded_drives: [], excluded_folders: [] },
+  images: { enabled: false, folders: [] },
   ui_scale: 1,
   // Only a fallback for a failed read; the first-run screen is the shell's call.
   onboarded: true,

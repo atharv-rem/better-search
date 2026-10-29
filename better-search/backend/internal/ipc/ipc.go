@@ -6,16 +6,24 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+
+	"better-search/backend/internal/images"
 )
 
 // Request types.
 const (
 	TypeSearch  = "search"  // {query, limit}
-	TypeContent = "content" // {query, limit}: files containing the words, from Windows Search
+	TypeContent = "content" // {query, limit, with_images}: files containing the words, from Windows Search and images.db
 	TypeOpen    = "open"    // {file_id}: user opened a result, bump its ranking
 	TypeStatus  = "status"  // index state
 	TypeReindex = "reindex" // rebuild the whole index; shows the UAC prompt
 	TypeTrim    = "trim"    // the app's windows are hidden: free memory until the next request; no reply
+
+	// Text in images (images.db), read by the shell with Windows' OCR.
+	TypeImagesScan   = "images_scan"   // {folders}: the images to read, as data.pending; forgets ones gone
+	TypeImagesAdd    = "images_add"    // {images}: store what was read
+	TypeImagesStatus = "images_status" // what's stored, as data
+	TypeImagesDelete = "images_delete" // delete images.db
 )
 
 // Event types sent without a request.
@@ -40,6 +48,10 @@ type Request struct {
 	Query  string `json:"query,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	FileID int64  `json:"file_id,omitempty"`
+
+	WithImages bool           `json:"with_images,omitempty"` // content: include images' text (image indexing is on)
+	Folders    []string       `json:"folders,omitempty"`     // images_scan
+	Images     []images.Image `json:"images,omitempty"`      // images_add
 }
 
 type Status struct {

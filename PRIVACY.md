@@ -10,6 +10,7 @@ Better Search is a file search for Windows, made by Atharv Remeshan. It works on
 |---|---|---|
 | An index of file and folder names, sizes and modified times for your NTFS drives (not file contents) | `%LOCALAPPDATA%\better-search\index.db` | So searches never scan your disk |
 | How often and when you open results | In the same index | To rank files you open often higher |
+| The text in your images, if you turn on "Index text in images" (read by Windows' own text recognition, on this computer) | `images.db` next to the index | So content searches find screenshots and photos by their words. Off unless you turn it on; Settings can delete it |
 | Your settings (shortcut, excluded drives and folders, search options) | The app's data folder | To remember your choices |
 | Your recent searches | `recent.json` in the app's data folder | Listed under the empty search box. Turn this off in Settings and nothing is kept; the list can be cleared there too |
 | Web search API keys you add | Windows Credential Manager | So web search can sign in to the provider you chose |

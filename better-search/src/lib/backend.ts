@@ -109,9 +109,10 @@ export const backend = {
   },
 
   /** Files containing every word of `query`, from Windows Search, its best
-   *  matches first. Rejects with code "no_windows_search" when it's off. */
-  async searchContent(query: string, limit = 50): Promise<SearchResult[]> {
-    const msg = await request("content", { query, limit });
+   *  matches first, with images whose text has them when `withImages` (image
+   *  indexing is on). Rejects with code "no_windows_search" when it's off. */
+  async searchContent(query: string, limit = 50, withImages = false): Promise<SearchResult[]> {
+    const msg = await request("content", { query, limit, with_images: withImages });
     return (msg.results as SearchResult[]) ?? [];
   },
 

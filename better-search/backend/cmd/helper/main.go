@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"better-search/backend/internal/database"
+	"better-search/backend/internal/images"
 	"better-search/backend/internal/indexer"
 	"better-search/backend/internal/ipc"
 	"better-search/backend/internal/memory"
@@ -74,6 +75,8 @@ func main() {
 	// other.
 	cancelSearch := context.CancelFunc(func() {})
 	contents := winsearch.New()
+	// Text the shell read in images with Windows' OCR (images.go).
+	pictures := images.New(images.Path(*dbPath))
 	startSearch := func(req ipc.Request) {
 		cancelSearch()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -83,7 +86,13 @@ func main() {
 			var results []search.Result
 			var err error
 			if req.Type == ipc.TypeContent {
-				results, err = search.Content(ctx, db, contents, req.Query, req.Limit, excluded.skip)
+				// With image indexing off, its text stays until deleted but
+				// isn't searched.
+				var imgs *images.Store
+				if req.WithImages {
+					imgs = pictures
+				}
+				results, err = search.Content(ctx, db, contents, imgs, req.Query, req.Limit, excluded.skip)
 			} else {
 				results, err = search.Search(ctx, db, req.Query, req.Limit, excluded.skip)
 			}
@@ -154,8 +163,48 @@ func main() {
 
 		case ipc.TypeTrim:
 			contents.Release()
+			pictures.Close()
 			db.Trim()
 			memory.Trim()
+
+		// Off the request loop: walking the folders takes a moment, and
+		// searches keep coming meanwhile.
+		case ipc.TypeImagesScan:
+			go func(req ipc.Request) {
+				pending, err := pictures.Pending(context.Background(), req.Folders, excluded.skip)
+				if err != nil {
+					out.Error(req.ID, req.Type, err.Error())
+					return
+				}
+				if pending == nil {
+					pending = []images.Image{}
+				}
+				out.OK(req.ID, req.Type, nil, map[string]any{"pending": pending})
+			}(req)
+
+		case ipc.TypeImagesAdd:
+			go func(req ipc.Request) {
+				if err := pictures.Add(context.Background(), req.Images); err != nil {
+					out.Error(req.ID, req.Type, err.Error())
+					return
+				}
+				out.OK(req.ID, req.Type, nil, nil)
+			}(req)
+
+		case ipc.TypeImagesStatus:
+			st, err := pictures.Stats(context.Background())
+			if err != nil {
+				out.Error(req.ID, req.Type, err.Error())
+				continue
+			}
+			out.OK(req.ID, req.Type, nil, st)
+
+		case ipc.TypeImagesDelete:
+			if err := pictures.Delete(); err != nil {
+				out.Error(req.ID, req.Type, err.Error())
+				continue
+			}
+			out.OK(req.ID, req.Type, nil, nil)
 
 		case ipc.TypeReindex:
 			if !indexing.CompareAndSwap(false, true) {

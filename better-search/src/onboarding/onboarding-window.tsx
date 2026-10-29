@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
-import { HardDriveIcon } from "@/lib/phosphor";
+import { FileImageIcon, HardDriveIcon } from "@/lib/phosphor";
 import { backend, BackendError, type IndexProgress } from "@/lib/backend";
 import { saveSettings, type Settings } from "@/lib/settings";
 import { diskSize, indexLocation, moveIndex, roomyDrives, type Drive, type IndexLocation } from "@/lib/storage";
@@ -17,12 +17,15 @@ type Step =
   | { kind: "space"; location: IndexLocation; drives: Drive[]; message?: string }
   | { kind: "asking" } // the Windows permission prompt is open
   | { kind: "indexing"; progress?: IndexProgress; overall: number }
-  | { kind: "done"; count: number }
+  // Whether to read the text in images too (images.rs); count is for "done".
+  | { kind: "images"; count: number }
+  | { kind: "done"; count: number; images: boolean }
   | { kind: "error"; message: string };
 
 const STEPS: MilestoneStep[] = [
   { id: "permission", title: "Permission", description: "Allow administrator access" },
   { id: "indexing", title: "Indexing", description: "Read your drives' file names" },
+  { id: "images", title: "Images", description: "Search the text in pictures" },
   { id: "done", title: "Done", description: "Start searching" },
 ];
 
@@ -57,8 +60,10 @@ function previewStep(screen: string | undefined): Step | undefined {
       };
     case "indexing":
       return { kind: "indexing", progress: { drive: "C:", phase: "reading", done: 420_000, total: 1_000_000 }, overall: 0.21 };
+    case "images":
+      return { kind: "images", count: 216_016 };
     case "done":
-      return { kind: "done", count: 216_016 };
+      return { kind: "done", count: 216_016, images: true };
     case "error":
       return { kind: "error", message: "The index couldn't be saved." };
   }
@@ -66,7 +71,13 @@ function previewStep(screen: string | undefined): Step | undefined {
 }
 
 const stepOf = (step: Step) =>
-  step.kind === "allow" || step.kind === "asking" || step.kind === "space" || step.kind === "error" ? 0 : step.kind === "indexing" ? 1 : 2;
+  step.kind === "allow" || step.kind === "asking" || step.kind === "space" || step.kind === "error"
+    ? 0
+    : step.kind === "indexing"
+      ? 1
+      : step.kind === "images"
+        ? 2
+        : 3;
 
 /** Marks the first run as over and closes the window. */
 async function finish() {
@@ -132,12 +143,27 @@ export function OnboardingWindow() {
     return furthest.current;
   }, []);
 
-  const showDone = useCallback(() => {
+  /** After the index (or skipping it): the choice about images, then done. */
+  const showImages = useCallback(() => {
     backend
       .status()
-      .then((s) => setStep({ kind: "done", count: s.file_count }))
-      .catch(() => setStep({ kind: "done", count: 0 }));
+      .then((s) => setStep({ kind: "images", count: s.file_count }))
+      .catch(() => setStep({ kind: "images", count: 0 }));
   }, []);
+
+  /** Image indexing on or off, as picked; on starts reading them (images.rs). */
+  const chooseImages = async (on: boolean, count: number) => {
+    if (on) {
+      try {
+        const settings = await invoke<Settings>("get_settings");
+        await saveSettings({ ...settings, images: { ...settings.images, enabled: true } });
+      } catch {
+        // Not saved: it can be turned on in settings.
+        on = false;
+      }
+    }
+    setStep({ kind: "done", count, images: on });
+  };
 
   /** Shows the drive choice if the index's drive is short of space (always,
    *  with a message saying what went wrong) and resolves false; true if
@@ -157,13 +183,13 @@ export function OnboardingWindow() {
     () =>
       backend.onEvent((e) => {
         if (e.type === "index_progress") setStep({ kind: "indexing", progress: e.progress, overall: overallOf(e.progress) });
-        else if (e.type === "index_done") showDone();
+        else if (e.type === "index_done") showImages();
         else if (e.code === "disk_full") {
           const message = "The drive ran out of space while saving the index.";
           checkSpace(message).then((unknown) => unknown && setStep({ kind: "error", message }));
         } else setStep({ kind: "error", message: e.error });
       }),
-    [overallOf, showDone, checkSpace]
+    [overallOf, showImages, checkSpace]
   );
 
   // Where things stand when the window opens: the backend starts with it, so
@@ -173,7 +199,7 @@ export function OnboardingWindow() {
     const look = () =>
       backend.status().then((s) => {
         if (s.indexing) setStep((st) => (st.kind === "indexing" ? st : { kind: "indexing", overall: furthest.current }));
-        else if (s.indexed_at > 0) setStep({ kind: "done", count: s.file_count });
+        else if (s.indexed_at > 0) setStep({ kind: "images", count: s.file_count });
       });
     look().catch(() => setTimeout(() => look().catch(() => {}), 800));
   }, []);
@@ -225,15 +251,17 @@ export function OnboardingWindow() {
         <main className="flex flex-1 flex-col justify-end px-8 pb-8">
           <div key={at} className="flex flex-col items-start gap-4 motion-safe:animate-fade-in">
             {step.kind === "allow" || step.kind === "asking" ? (
-              <Permission step={step} onAllow={start} onSkip={finish} />
+              <Permission step={step} onAllow={start} onSkip={showImages} />
             ) : step.kind === "space" ? (
-              <Space step={step} onContinue={start} />
+              <Space step={step} onContinue={start} onSkip={showImages} />
             ) : step.kind === "indexing" ? (
               <Indexing step={step} />
+            ) : step.kind === "images" ? (
+              <Images onChoose={(on) => chooseImages(on, step.count)} />
             ) : step.kind === "done" ? (
-              <Success count={step.count} />
+              <Success count={step.count} images={step.images} />
             ) : (
-              <Failed message={step.message} onRetry={start} />
+              <Failed message={step.message} onRetry={start} onSkip={showImages} />
             )}
           </div>
         </main>
@@ -317,7 +345,7 @@ function Permission({ step, onAllow, onSkip }: { step: Step; onAllow: () => void
   );
 }
 
-function Space({ step, onContinue }: { step: Extract<Step, { kind: "space" }>; onContinue: () => void }) {
+function Space({ step, onContinue, onSkip }: { step: Extract<Step, { kind: "space" }>; onContinue: () => void; onSkip: () => void }) {
   const { location } = step;
   const others = roomyDrives(location, step.drives).filter((d) => d.letter !== location.drive);
   const [moving, setMoving] = useState<string | null>(null);
@@ -376,7 +404,7 @@ function Space({ step, onContinue }: { step: Extract<Step, { kind: "space" }>; o
           check again
         </button>
       )}
-      <button type="button" onClick={finish} disabled={moving !== null} className={secondary}>
+      <button type="button" onClick={onSkip} disabled={moving !== null} className={secondary}>
         skip
       </button>
     </>
@@ -409,11 +437,47 @@ function Indexing({ step }: { step: Extract<Step, { kind: "indexing" }> }) {
   );
 }
 
-function Success({ count }: { count: number }) {
+/** Whether to read the text in screenshots and photos, so a content search
+ *  finds them. Off unless picked: it takes a while and some space. */
+function Images({ onChoose }: { onChoose: (on: boolean) => void }) {
+  const [saving, setSaving] = useState(false);
+  return (
+    <>
+      <span className="flex size-9 items-center justify-center rounded-xl bg-black/35 ring-1 ring-white/10">
+        <FileImageIcon size={18} />
+      </span>
+      <Intro title="Search the text in your images?">
+        Better Search can read the words in your screenshots and photos with Windows' own text recognition, so{" "}
+        <span className="font-semibold text-white">\ elasticity</span> finds that quiz screenshot. It reads your Desktop,
+        Documents, Pictures and Downloads in the background. Nothing leaves this computer, and you can turn it off or
+        delete it in Settings.
+      </Intro>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => {
+            setSaving(true);
+            onChoose(true);
+          }}
+          className={primary}
+        >
+          index images
+        </button>
+        <button type="button" disabled={saving} onClick={() => onChoose(false)} className={secondary}>
+          not now
+        </button>
+      </div>
+    </>
+  );
+}
+
+function Success({ count, images }: { count: number; images: boolean }) {
   return (
     <>
       <Intro title="You're all set">
         {count > 0 ? `${count.toLocaleString()} files and folders are ready to search. ` : "Your drives are indexed and ready to search. "}
+        {images && "Your images are being read in the background. "}
         Press <span className="font-semibold text-white">Alt + S</span> anywhere to search.
       </Intro>
       <button type="button" onClick={finish} className={primary} autoFocus>
@@ -423,7 +487,7 @@ function Success({ count }: { count: number }) {
   );
 }
 
-function Failed({ message, onRetry }: { message: string; onRetry: () => void }) {
+function Failed({ message, onRetry, onSkip }: { message: string; onRetry: () => void; onSkip: () => void }) {
   return (
     <>
       <Intro title="Indexing didn't finish" alert>
@@ -433,7 +497,7 @@ function Failed({ message, onRetry }: { message: string; onRetry: () => void }) 
         <button type="button" onClick={onRetry} className={primary}>
           try again
         </button>
-        <button type="button" onClick={finish} className={secondary}>
+        <button type="button" onClick={onSkip} className={secondary}>
           skip
         </button>
       </div>

@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowsClockwiseIcon, FolderIcon, FolderOpenIcon, HardDriveIcon, PlusIcon, XIcon } from "@/lib/phosphor";
+import {
+  ArrowsClockwiseIcon,
+  FileImageIcon,
+  FolderIcon,
+  FolderOpenIcon,
+  HardDriveIcon,
+  PlusIcon,
+  TrashIcon,
+  XIcon,
+} from "@/lib/phosphor";
 import { backend, BackendError, type IndexProgress, type IndexStatus } from "@/lib/backend";
 import type { Settings } from "@/lib/settings";
+import { deleteImageIndex, useImageIndex } from "@/lib/images";
 import { diskSize, indexLocation, moveIndex, type Drive, type IndexLocation } from "@/lib/storage";
 import { ActionButton, Group, Row, Select, Switch } from "@/settings/controls";
 import { keepOpenWhile } from "@/settings/keep-open";
@@ -226,6 +236,8 @@ export function IndexingSection({ settings, save }: { settings: Settings; save: 
         folders={indexing.excluded_folders}
         onChange={(excluded_folders) => setIndexing({ excluded_folders })}
       />
+
+      <ImageIndexing settings={settings} save={save} />
     </>
   );
 }
@@ -358,6 +370,126 @@ function ExcludedFolders({ folders, onChange }: { folders: string[]; onChange: (
         <ActionButton variant="primary" disabled={!draft.trim()} onClick={() => add(draft)}>
           <PlusIcon size={14} />
           Add
+        </ActionButton>
+      </Row>
+    </Group>
+  );
+}
+
+/** Reading the text in images (images.rs): on or off, which folders, how far
+ *  along, and deleting what's stored when space is short. */
+export function ImageIndexing({ settings, save }: { settings: Settings; save: Save }) {
+  const [status, refresh] = useImageIndex();
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = settings.images.enabled;
+  const progress = status?.progress;
+  const stored = status?.stored;
+
+  const setImages = async (change: Partial<Settings["images"]>) => {
+    const err = await save((s) => ({ ...s, images: { ...s.images, ...change } }));
+    setError(err);
+    refresh();
+  };
+
+  // Changing the default folders makes the list the user's own.
+  const setFolders = (folders: string[]) => setImages({ folders });
+  const addFolder = async () => {
+    const picked = await keepOpenWhile(
+      openDialog({ directory: true, multiple: false, title: "Choose a folder whose images to read" }).catch(() => null)
+    );
+    if (typeof picked !== "string" || !status) return;
+    if (status.folders.some((f) => f.toLowerCase() === picked.toLowerCase())) return;
+    setFolders([...status.folders, picked]);
+  };
+
+  const remove = async () => {
+    if (!confirming) return setConfirming(true);
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteImageIndex();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    setDeleting(false);
+    setConfirming(false);
+    refresh();
+  };
+
+  const description = !enabled
+    ? stored?.exists
+      ? `Off: images aren't read or shown in results. Their text is kept (${fileSize(stored.bytes)}) until you delete it.`
+      : `Reads the words in screenshots and photos with Windows' text recognition, so a search starting with ${settings.search.content_trigger} finds them.`
+    : progress?.running
+      ? progress.total > 0
+        ? `Reading images… ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()}`
+        : "Looking for new images…"
+      : stored?.exists
+        ? `${stored.images.toLocaleString()} images read, ${stored.with_text.toLocaleString()} with text · ${fileSize(stored.bytes)}`
+        : "Starting…";
+
+  return (
+    <Group
+      title="Text in images"
+      footer="Windows' own text recognition, on this computer. The text is kept apart from the search index, so deleting it doesn't touch your file search."
+    >
+      <Row
+        icon={<FileImageIcon size={18} className={progress?.running ? "motion-safe:animate-pulse" : undefined} />}
+        label="Index text in images"
+        description={description}
+        error={error ?? progress?.error ?? null}
+      >
+        <Switch checked={enabled} label="Index text in images" onChange={(on) => setImages({ enabled: on })} />
+      </Row>
+
+      {enabled &&
+        status?.folders.map((f) => (
+          <Row key={f} icon={<FolderIcon size={18} />} label={f} description={status.default_folders ? "Default folder" : undefined}>
+            <ActionButton
+              aria-label={`Stop reading images in ${f}`}
+              title="Remove"
+              disabled={status.folders.length === 1}
+              onClick={() => setFolders(status.folders.filter((x) => x !== f))}
+            >
+              <XIcon size={14} />
+            </ActionButton>
+          </Row>
+        ))}
+      {enabled && (
+        <Row label="Add a folder" description="Its images are read too, subfolders included.">
+          {status && !status.default_folders && (
+            <ActionButton onClick={() => setFolders([])}>
+              <ArrowsClockwiseIcon size={14} />
+              Use default folders
+            </ActionButton>
+          )}
+          <ActionButton onClick={addFolder}>
+            <FolderOpenIcon size={14} />
+            Browse
+          </ActionButton>
+        </Row>
+      )}
+
+      <Row
+        icon={<TrashIcon size={18} />}
+        label="Delete image index"
+        description={
+          confirming
+            ? "Click again to delete. Image indexing turns off; your images aren't touched."
+            : stored?.exists
+              ? `Frees ${fileSize(stored.bytes)} and turns image indexing off.`
+              : "Nothing stored yet."
+        }
+      >
+        {confirming && (
+          <ActionButton onClick={() => setConfirming(false)} disabled={deleting}>
+            Cancel
+          </ActionButton>
+        )}
+        <ActionButton variant="danger" disabled={deleting || (!stored?.exists && !enabled)} onClick={remove}>
+          {deleting ? "Deleting…" : confirming ? "Delete" : "Delete…"}
         </ActionButton>
       </Row>
     </Group>

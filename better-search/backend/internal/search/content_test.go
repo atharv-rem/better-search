@@ -24,7 +24,7 @@ func TestContentLive(t *testing.T) {
 	defer cancel()
 	ws := winsearch.New()
 
-	all, err := Content(ctx, db, ws, "the", 10, nil)
+	all, err := Content(ctx, db, ws, nil, "the", 10, nil)
 	if errors.Is(err, winsearch.ErrUnavailable) {
 		t.Skip(err)
 	}
@@ -46,7 +46,7 @@ func TestContentLive(t *testing.T) {
 	// Leaving out the first result's folder leaves out everything in it.
 	dir := filepath.Dir(all[0].Path) + `\`
 	skip := func(path string, _ bool) bool { return strings.HasPrefix(path, dir) }
-	kept, err := Content(ctx, db, ws, "the", 10, skip)
+	kept, err := Content(ctx, db, ws, nil, "the", 10, skip)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,17 @@ func TestContentLive(t *testing.T) {
 		}
 	}
 
-	if none, err := Content(ctx, db, ws, "", 10, nil); err != nil || len(none) != 0 {
+	if none, err := Content(ctx, db, ws, nil, "", 10, nil); err != nil || len(none) != 0 {
 		t.Errorf("empty query: %v, %v", none, err)
+	}
+}
+
+func TestInterleave(t *testing.T) {
+	got := strings.Join(interleave([]string{`C:\a.pdf`, `C:\b.pdf`, `C:\c.pdf`}, []string{`C:\x.png`, `c:\A.PDF`}), ",")
+	if want := `C:\a.pdf,C:\x.png,C:\b.pdf,C:\c.pdf`; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if got := interleave([]string{`C:\a.pdf`}, nil); len(got) != 1 {
+		t.Errorf("no pictures: %v", got)
 	}
 }

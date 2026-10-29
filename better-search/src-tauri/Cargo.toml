@@ -68,6 +68,11 @@ windows = { version = "0.62", features = [
     # First-page previews of PDFs, which Windows has no thumbnails for.
     "Data_Pdf",
     "Foundation",
+    # Reading the text in images for content search (images.rs): the OCR
+    # engine, the decoder that hands it pixels, and the list of lines it reads.
+    "Foundation_Collections",
+    "Graphics_Imaging",
+    "Media_Ocr",
     "Storage",
     "Storage_Streams",
     # Search providers' API keys, kept in Credential Manager.

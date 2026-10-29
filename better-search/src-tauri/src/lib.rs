@@ -11,6 +11,7 @@ use tauri_plugin_shell::{
 
 mod calc;
 mod docx;
+mod images;
 mod logs;
 mod recent;
 mod settings;
@@ -698,6 +699,12 @@ fn search_ready(window: WebviewWindow) {
 /// the backend wrote, not wrapped in a string, so the page parses it once.
 #[tauri::command]
 async fn backend_request(app: AppHandle, id: String, message: String) -> Result<tauri::ipc::Response, String> {
+    Ok(tauri::ipc::Response::new(backend_send(&app, id, message).await?))
+}
+
+/// Sends one request line to the backend and waits for the line answering
+/// it (by `id`), for the pages and for the shell's own requests (images.rs).
+pub(crate) async fn backend_send(app: &AppHandle, id: String, message: String) -> Result<String, String> {
     let (reply, replied) = oneshot::channel();
     // Waiting before the request goes out: the reply can't arrive unclaimed.
     app.state::<PendingReplies>().0.lock().unwrap().insert(id.clone(), reply);
@@ -709,8 +716,7 @@ async fn backend_request(app: AppHandle, id: String, message: String) -> Result<
         app.state::<PendingReplies>().0.lock().unwrap().remove(&id);
         return Err(e);
     }
-    let line = replied.await.map_err(|_| "backend stopped".to_string())?;
-    Ok(tauri::ipc::Response::new(line))
+    replied.await.map_err(|_| "backend stopped".to_string())
 }
 
 /// Opens a search result with its default app, or shows it in Explorer.
@@ -1095,10 +1101,17 @@ async fn file_thumbnail(path: String, size: u32) -> tauri::ipc::Response {
             if is_cloud_only(&path) {
                 return shell_thumbnail(&path, size, true);
             }
-            shell_thumbnail(&path, size, false).or_else(|| {
-                // Without Acrobat or a similar app, Windows has no PDF thumbnails.
-                path.to_lowercase().ends_with(".pdf").then(|| pdf_first_page(&path, size)).flatten()
-            })
+            let lower = path.to_lowercase();
+            shell_thumbnail(&path, size, false)
+                .or_else(|| {
+                    // Without Acrobat or a similar app, Windows has no PDF thumbnails.
+                    lower.ends_with(".pdf").then(|| pdf_first_page(&path, size)).flatten()
+                })
+                .or_else(|| {
+                    // OneDrive's synced images get no thumbnail here (its
+                    // handler fails), though they're on disk: drawn ourselves.
+                    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)).then(|| decoded_image(&path, size)).flatten()
+                })
         })
         .await
         .ok()
@@ -1137,6 +1150,69 @@ fn shell_thumbnail(path: &str, size: u32, cached_only: bool) -> Option<Vec<u8>> 
             CoUninitialize();
         }
         image
+    }
+}
+
+/// Images Windows' own decoder reads, for `decoded_image`.
+#[cfg(windows)]
+const IMAGE_EXTENSIONS: [&str; 11] = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".ico", ".webp", ".heic", ".jfif"];
+
+/// An image file as a PNG fitted within `size` × `size` physical pixels,
+/// decoded by Windows (the decoder images.rs reads text with), for images the
+/// shell gives no thumbnail of. Upright, as a phone's sideways photo is shown.
+#[cfg(windows)]
+fn decoded_image(path: &str, size: u32) -> Option<Vec<u8>> {
+    use windows::core::HSTRING;
+    use windows::Graphics::Imaging::{
+        BitmapAlphaMode, BitmapDecoder, BitmapEncoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform,
+        ColorManagementMode, ExifOrientationMode,
+    };
+    use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+    use windows::Storage::{FileAccessMode, StorageFile};
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+    let draw = || -> windows::core::Result<Vec<u8>> {
+        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))?.join()?;
+        let input = file.OpenAsync(FileAccessMode::Read)?.join()?;
+        let decoder = BitmapDecoder::CreateAsync(&input)?.join()?;
+        // Scaling comes before turning upright, so it's in the stored size.
+        let (width, height) = (decoder.PixelWidth()?, decoder.PixelHeight()?);
+        let scale = (size as f64 / width.max(height).max(1) as f64).min(1.0);
+        let transform = BitmapTransform::new()?;
+        transform.SetScaledWidth(((width as f64 * scale).round() as u32).max(1))?;
+        transform.SetScaledHeight(((height as f64 * scale).round() as u32).max(1))?;
+        transform.SetInterpolationMode(BitmapInterpolationMode::Fant)?;
+        let bitmap = decoder
+            .GetSoftwareBitmapTransformedAsync(
+                BitmapPixelFormat::Bgra8,
+                BitmapAlphaMode::Premultiplied,
+                &transform,
+                ExifOrientationMode::RespectExifOrientation,
+                ColorManagementMode::DoNotColorManage,
+            )?
+            .join()?;
+        input.Close()?;
+        let output = InMemoryRandomAccessStream::new()?;
+        let encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId()?, &output)?.join()?;
+        encoder.SetSoftwareBitmap(&bitmap)?;
+        encoder.FlushAsync()?.join()?;
+        let len = output.Size()? as u32;
+        let reader = DataReader::CreateDataReader(&output.GetInputStreamAt(0)?)?;
+        reader.LoadAsync(len)?.join()?;
+        let mut png = vec![0u8; len as usize];
+        reader.ReadBytes(&mut png)?;
+        Ok(png)
+    };
+
+    unsafe {
+        // Multithreaded, as pdf_first_page: `join` would block a
+        // single-threaded apartment's message loop.
+        let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let png = draw();
+        if com {
+            CoUninitialize();
+        }
+        png.ok()
     }
 }
 
@@ -1439,6 +1515,7 @@ pub fn run() {
         .manage(BarLayout::default())
         .manage(PendingUpdate::default())
         .manage(PendingReplies::default())
+        .manage(images::ImageIndex::default())
         .manage(Browsers::default())
         .manage(SearchMode::default())
         // The app is named "Better Search" (productName, which Task Manager
@@ -1482,6 +1559,8 @@ pub fn run() {
             uninstall_app,
             open_logs_folder,
             open_indexing_options,
+            images::image_index_status,
+            images::delete_image_index,
             logs::recent_problems,
             can_update,
             pending_update,
@@ -1522,6 +1601,7 @@ pub fn run() {
             }
             start_watcher(app.handle());
             start_backend(app.handle());
+            images::schedule(app.handle());
             if updates_configured(app.config()) {
                 start_update_checks(app.handle());
             }

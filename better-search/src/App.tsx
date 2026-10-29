@@ -306,6 +306,8 @@ function App() {
   const trigger = settings.web.trigger;
   const webQuery = webQueryOf(query, trigger);
   const contentTrigger = settings.search.content_trigger;
+  // Off hides image results; their text stays until deleted in settings.
+  const imagesOn = settings.images.enabled;
   // Settings keep the two shortcuts from starting with each other.
   const contentQuery = webQuery === null ? contentQueryOf(query, contentTrigger) : null;
   // The web search shortcut wins if the user has set it to "=".
@@ -526,7 +528,7 @@ function App() {
       const search =
         inside === null
           ? backend.search(query, maxResults).then((found) => withApps(found, apps.current, query, maxResults))
-          : backend.searchContent(inside, maxResults);
+          : backend.searchContent(inside, maxResults, imagesOn);
       search
         .then((r) => {
           if (seq !== searchSeq.current) return;
@@ -546,7 +548,7 @@ function App() {
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, ready, shownAt, maxResults, trigger, contentTrigger]);
+  }, [query, ready, shownAt, maxResults, trigger, contentTrigger, imagesOn]);
 
   // Calculate as you type, without the search's pause: the backend gives up
   // on anything that takes over 100 ms. Only the newest answer is shown.

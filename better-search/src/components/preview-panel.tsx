@@ -81,18 +81,7 @@ function entryResult(folder: SearchResult, entry: FolderEntry): SearchResult {
 const fadeBottom: CSSProperties = { maskImage: "linear-gradient(to bottom, black 60%, transparent)" };
 
 function PreviewContent({ result, preview }: { result: SearchResult; preview: Preview }) {
-  if (preview.kind === "image") {
-    // Pages (PDFs, Office files) keep their top, where the title is.
-    const page = groupOf(result) === "documents";
-    return (
-      <img
-        src={preview.url}
-        alt=""
-        draggable={false}
-        className={cn("h-full w-full object-cover", page && "object-top")}
-      />
-    );
-  }
+  if (preview.kind === "image") return <ImagePreview result={result} url={preview.url} />;
 
   if (preview.kind === "text") {
     const text = preview.text.split("\n", TEXT_LINES).join("\n");
@@ -175,5 +164,27 @@ export function PreviewPanel({ result, size, thumbSize, className, style }: Prev
         )}
       </div>
     </div>
+  );
+}
+
+/** Wider or taller than this, an image is shown whole rather than cropped to
+ *  the square: a cropped screenshot is mostly blank margin. */
+const CROP_ASPECT = 1.6;
+
+function ImagePreview({ result, url }: { result: SearchResult; url: string }) {
+  // Pages (PDFs, Office files) keep their top, where the title is.
+  const page = groupOf(result) === "documents";
+  const [whole, setWhole] = useState(false);
+  return (
+    <img
+      src={url}
+      alt=""
+      draggable={false}
+      onLoad={(e) => {
+        const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+        setWhole(h > 0 && w > 0 && (w / h > CROP_ASPECT || h / w > CROP_ASPECT));
+      }}
+      className={cn("h-full w-full", whole ? "object-contain" : "object-cover", page && !whole && "object-top")}
+    />
   );
 }

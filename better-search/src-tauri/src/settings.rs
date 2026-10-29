@@ -18,6 +18,8 @@ pub struct Settings {
     pub search: SearchSettings,
     pub web: WebSettings,
     pub indexing: IndexingSettings,
+    /// Reading the text in images with Windows' OCR (images.rs).
+    pub images: ImageSettings,
     /// The search window's zoom, on top of Windows' display scaling: 1.0 is
     /// 100%. Changed in steps of `UI_SCALE_STEP`.
     pub ui_scale: f64,
@@ -82,6 +84,17 @@ pub struct IndexingSettings {
     pub excluded_folders: Vec<String>,
 }
 
+/// Off until the user turns it on: reading every image takes a while, and
+/// the text takes some space (images.db, apart from the index).
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageSettings {
+    pub enabled: bool,
+    /// Folders whose images are read, subfolders included; empty for the
+    /// user's Desktop, Documents, Pictures and Downloads.
+    pub folders: Vec<String>,
+}
+
 pub const DEFAULT_SHORTCUT: &str = "Alt+S";
 const DEFAULT_WEB_TRIGGER: &str = "/";
 /// The first is the default; the others stand in when the web search's
@@ -97,6 +110,7 @@ impl Default for Settings {
             search: SearchSettings::default(),
             web: WebSettings::default(),
             indexing: IndexingSettings::default(),
+            images: ImageSettings::default(),
             ui_scale: 1.0,
             onboarded: false,
             index_folder: String::new(),
@@ -231,6 +245,15 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
         *d = d.trim_end_matches('\\').to_uppercase();
     }
     s.indexing.excluded_drives.dedup();
+
+    let mut folders: Vec<String> = Vec::new();
+    for f in &s.images.folders {
+        let f = f.trim().trim_end_matches(['\\', '/']).to_string();
+        if !f.is_empty() && !folders.iter().any(|g| g.eq_ignore_ascii_case(&f)) {
+            folders.push(f);
+        }
+    }
+    s.images.folders = folders;
     Ok(s)
 }
 
@@ -298,9 +321,28 @@ pub fn update_settings(app: AppHandle, state: State<'_, SettingsState>, settings
             log::warn!("Couldn't clear recent searches: {e}");
         }
     }
-    *current = settings.clone();
+    let old_images = std::mem::replace(&mut *current, settings.clone()).images;
+    drop(current);
     let _ = app.emit("settings-changed", &settings);
+    crate::images::settings_changed(&app, &old_images, &settings.images);
     Ok(settings)
+}
+
+/// Turns image indexing on or off from the shell (`delete_image_index`),
+/// saving and telling every window as `update_settings` does.
+pub fn set_images_enabled(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let state = app.state::<SettingsState>();
+    let mut current = state.0.lock().unwrap();
+    if current.images.enabled == enabled {
+        return Ok(());
+    }
+    let mut settings = current.clone();
+    settings.images.enabled = enabled;
+    save(app, &settings)?;
+    *current = settings.clone();
+    drop(current);
+    let _ = app.emit("settings-changed", &settings);
+    Ok(())
 }
 
 /// Turns the shortcut off while the settings page records a new one, so
@@ -413,6 +455,17 @@ mod tests {
         assert_eq!(with_free_content_trigger(s.clone()).search.content_trigger, ";");
         assert!(validate(with_free_content_trigger(s)).is_ok());
         assert_eq!(with_free_content_trigger(Settings::default()).search.content_trigger, "\\");
+    }
+
+    #[test]
+    fn image_folders_are_tidied() {
+        let mut s = Settings::default();
+        s.images.folders = vec![r" C:\Notes\ ".into(), r"c:\notes".into(), "".into(), "D:/Shots/".into()];
+        assert_eq!(validate(s).unwrap().images.folders, vec![r"C:\Notes".to_string(), "D:/Shots".to_string()]);
+        // Off by default, and settings from before it have it off.
+        assert!(!Settings::default().images.enabled);
+        let old: Settings = serde_json::from_str(r#"{"shortcut":"Alt+S"}"#).unwrap();
+        assert!(!old.images.enabled && old.images.folders.is_empty());
     }
 
     #[test]
