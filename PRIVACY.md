@@ -16,6 +16,8 @@ Better Search is a file search for Windows, made by Atharv Remeshan. It works on
 | Web search usage counts | `usage.json` in the app's data folder | To show your remaining credits |
 | A log file | The app's log folder (Settings can open it) | To diagnose problems. It records app events, not your searches |
 
+Searching inside files (`\` in the search bar) asks Windows Search, the index Windows already keeps of your files' contents, which files contain your words. Better Search doesn't read or store file contents for this; the search stays on your computer between the app and Windows.
+
 All of this stays on your computer. Uninstalling Better Search removes it when you tick "Delete the application data" in the uninstaller; the API keys are removed at the same time.
 
 ## Administrator access

@@ -18,6 +18,8 @@ export interface Settings {
     show_preview: boolean;
     /** List the last searches under the empty search box. */
     remember_recent: boolean;
+    /** What a search starts with to search inside files, like "\". */
+    content_trigger: string;
   };
   web: {
     engine: SearchEngineId | "custom";
@@ -48,11 +50,19 @@ export interface Settings {
 }
 
 export const DEFAULT_WEB_TRIGGER = "/";
+export const DEFAULT_CONTENT_TRIGGER = "\\";
 
 /** Until the saved ones arrive. Matches `Settings::default` in settings.rs. */
 export const DEFAULT_SETTINGS: Settings = {
   shortcut: "Alt+S",
-  search: { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true },
+  search: {
+    max_results: 50,
+    enter_reveals: false,
+    clear_on_close: false,
+    show_preview: true,
+    remember_recent: true,
+    content_trigger: DEFAULT_CONTENT_TRIGGER,
+  },
   web: { engine: "google", custom_url: "", browser: "default", provider: "browser", trigger: DEFAULT_WEB_TRIGGER },
   indexing: { excluded_drives: [], excluded_folders: [] },
   ui_scale: 1,

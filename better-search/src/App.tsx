@@ -80,6 +80,15 @@ function webQueryOf(query: string, trigger: string) {
   return query.startsWith(trigger) ? query.slice(trigger.length).trim() : null;
 }
 
+/** "\ tax notes" searches inside files for "tax notes"; null for anything
+ *  else. `trigger` is the user's shortcut for it ("\" by default). */
+function contentQueryOf(query: string, trigger: string) {
+  return query.startsWith(trigger) ? query.slice(trigger.length).trim() : null;
+}
+
+/** What came of the newest content search, for the query it was for. */
+type ContentState = { query: string; kind: "done" | "off" | "failed" };
+
 /** "=3*2+4" and "3*2+4=" are calculations; null for anything else. */
 function calcQueryOf(query: string) {
   if (query.startsWith("=")) return query.slice(1).trim();
@@ -296,11 +305,16 @@ function App() {
   const ready = index.kind === "ready";
   const trigger = settings.web.trigger;
   const webQuery = webQueryOf(query, trigger);
+  const contentTrigger = settings.search.content_trigger;
+  // Settings keep the two shortcuts from starting with each other.
+  const contentQuery = webQuery === null ? contentQueryOf(query, contentTrigger) : null;
   // The web search shortcut wins if the user has set it to "=".
-  const calcQuery = webQuery === null ? calcQueryOf(query) : null;
+  const calcQuery = webQuery === null && contentQuery === null ? calcQueryOf(query) : null;
   // A typed URL opens the site instead of searching files or the web for it,
   // also after the web search shortcut ("/github.com").
-  const urlQuery = webQuery !== null ? urlOf(webQuery) : calcQuery === null ? urlOf(query) : null;
+  const urlQuery = webQuery !== null ? urlOf(webQuery) : calcQuery === null && contentQuery === null ? urlOf(query) : null;
+  const [contentState, setContentState] = useState<ContentState | null>(null);
+  const contentShown = contentQuery && contentState?.query === contentQuery ? contentState.kind : null;
   const rememberRecent = settings.search.remember_recent;
   const recentFiles = useMemo(() => recent.filter((q) => !q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
   const recentWeb = useMemo(() => recent.filter((q) => q.startsWith(RECENT_WEB_PREFIX)).slice(0, RECENT_SHOWN), [recent]);
@@ -496,7 +510,11 @@ function App() {
 
   useEffect(() => {
     const seq = ++searchSeq.current;
-    if (!ready || !query.trim() || webQueryOf(query, trigger) !== null || calcQueryOf(query) !== null || urlOf(query) !== null) {
+    const web = webQueryOf(query, trigger) !== null;
+    const inside = web ? null : contentQueryOf(query, contentTrigger);
+    const other = inside === null && (web || calcQueryOf(query) !== null || urlOf(query) !== null);
+    // Inside files doesn't need the app's own index: Windows Search answers it.
+    if ((!ready && inside === null) || !query.trim() || other || inside === "") {
       setSearchMs(null);
       setResults([]);
       setActiveIndex(null);
@@ -504,19 +522,31 @@ function App() {
     }
     const timer = setTimeout(() => {
       const started = performance.now();
-      backend
-        .search(query, maxResults)
-        .then((found) => {
+      // Inside files: Windows Search's matches, without the Start menu's apps.
+      const search =
+        inside === null
+          ? backend.search(query, maxResults).then((found) => withApps(found, apps.current, query, maxResults))
+          : backend.searchContent(inside, maxResults);
+      search
+        .then((r) => {
           if (seq !== searchSeq.current) return;
-          const r = withApps(found, apps.current, query, maxResults);
           setSearchMs(Math.max(1, Math.round(performance.now() - started)));
           setResults(r);
           setActiveIndex(r.length ? 0 : null);
+          if (inside !== null) setContentState({ query: inside, kind: "done" });
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (seq !== searchSeq.current || inside === null) return;
+          if (err instanceof BackendError && err.code === "superseded") return;
+          setResults([]);
+          setActiveIndex(null);
+          const off = err instanceof BackendError && err.code === "no_windows_search";
+          if (!off) console.error("Content search failed:", err);
+          setContentState({ query: inside, kind: off ? "off" : "failed" });
+        });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, ready, shownAt, maxResults, trigger]);
+  }, [query, ready, shownAt, maxResults, trigger, contentTrigger]);
 
   // Calculate as you type, without the search's pause: the backend gives up
   // on anything that takes over 100 ms. Only the newest answer is shown.
@@ -801,8 +831,16 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const showResults = ready && results.length > 0;
-  const showPanel = webQuery !== null || urlQuery !== null || showResults || showRecentFiles || (index.kind !== "ready" && index.kind !== "checking");
+  const showResults = (ready || contentQuery !== null) && results.length > 0;
+  // Inside files with nothing listed: a hint, or why there's nothing.
+  const showContentNotice = contentQuery !== null && !showResults && (contentQuery === "" || contentShown !== null);
+  const showPanel =
+    webQuery !== null ||
+    urlQuery !== null ||
+    showResults ||
+    showContentNotice ||
+    showRecentFiles ||
+    (index.kind !== "ready" && index.kind !== "checking");
 
   // Picks the browser at the end of the web-search and URL rows.
   const browserMenu = (
@@ -904,10 +942,24 @@ function App() {
                 Snap windows
               </span>
             ) : (
-              <span className="ml-1 flex h-4 items-center gap-0.5 rounded-[5px] bg-[#2a0b0b] px-1 text-[9px] leading-3 text-red-200/80 ring-1 ring-red-500/20">
-                <span className="font-semibold text-red-300">{trigger}</span>
-                to search the web
-              </span>
+              contentQuery !== null ? (
+                <span className="ml-1 flex h-4 items-center rounded-[5px] bg-emerald-950 px-1 text-[9px] leading-3 text-emerald-200/80 ring-1 ring-emerald-500/20">
+                  Inside files
+                </span>
+              ) : (
+                // One pill per shortcut, each in its search's colour: red for
+                // the web, green for inside files.
+                <span className="ml-1 flex items-center gap-2">
+                  <span className="flex h-4 items-center gap-0.5 rounded-[5px] bg-[#2a0b0b] px-1 text-[9px] leading-3 text-red-200/80 ring-1 ring-red-500/20">
+                    <span className="font-semibold text-red-300">{trigger}</span>
+                    to search the web
+                  </span>
+                  <span className="flex h-4 items-center gap-0.5 rounded-[5px] bg-emerald-950 px-1 text-[9px] leading-3 text-emerald-200/80 ring-1 ring-emerald-500/20">
+                    <span className="font-semibold text-emerald-300">{contentTrigger}</span>
+                    inside files
+                  </span>
+                </span>
+              )
             )
           }
           rightSlot={
@@ -1046,6 +1098,8 @@ function App() {
                 onOpen={(r, ctrl) => openResult(r, ctrl !== enterReveals)}
                 maxHeight={resultsMaxHeight(screenHeight)}
               />
+            ) : showContentNotice ? (
+              <ContentNotice query={contentQuery ?? ""} state={contentShown} />
             ) : showRecentFiles ? (
               <RecentSearches
                 label="Recent searches"
@@ -1064,6 +1118,34 @@ function App() {
         {browserMenuOpen && (webQuery !== null || urlQuery !== null) && <div style={{ height: browsers.length * BROWSER_ITEM_HEIGHT }} />}
       </div>
     </div>
+  );
+}
+
+/** Under a content search with no results: what to type, or why nothing
+ *  came back. */
+function ContentNotice({ query, state }: { query: string; state: ContentState["kind"] | null }) {
+  const openIndexing = () => invoke("open_indexing_options").catch((err) => console.error("Failed to open indexing options:", err));
+  return (
+    <p role="status" className="p-3 text-[12px] leading-4 text-zinc-400">
+      {query === "" ? (
+        "Type words to find the files that contain them."
+      ) : state === "off" ? (
+        "Windows Search is turned off, so file contents can't be searched. Turn on the Windows Search service to use it."
+      ) : state === "failed" ? (
+        "Windows Search couldn't answer that search."
+      ) : (
+        <>
+          No files Windows has indexed contain “{query}”.{" "}
+          <button
+            type="button"
+            onClick={openIndexing}
+            className="text-zinc-300 underline decoration-white/30 underline-offset-2 hover:text-white"
+          >
+            Choose indexed folders
+          </button>
+        </>
+      )}
+    </p>
   );
 }
 

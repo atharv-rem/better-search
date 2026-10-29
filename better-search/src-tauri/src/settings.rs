@@ -48,6 +48,10 @@ pub struct SearchSettings {
     pub show_preview: bool,
     /// List the last searches under the empty search box (recent.rs).
     pub remember_recent: bool,
+    /// What a search starts with to search inside files (with Windows Search)
+    /// instead of their names, like "\". It pairs with the web search's "/",
+    /// and no file name can contain it.
+    pub content_trigger: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -80,6 +84,9 @@ pub struct IndexingSettings {
 
 pub const DEFAULT_SHORTCUT: &str = "Alt+S";
 const DEFAULT_WEB_TRIGGER: &str = "/";
+/// The first is the default; the others stand in when the web search's
+/// shortcut already is it.
+const CONTENT_TRIGGERS: [&str; 3] = ["\\", ";", "~"];
 const UI_SCALE_STEP: f64 = 0.1;
 const ENGINES: [&str; 5] = ["google", "bing", "duckduckgo", "brave", "custom"];
 
@@ -99,7 +106,14 @@ impl Default for Settings {
 
 impl Default for SearchSettings {
     fn default() -> Self {
-        Self { max_results: 50, enter_reveals: false, clear_on_close: false, show_preview: true, remember_recent: true }
+        Self {
+            max_results: 50,
+            enter_reveals: false,
+            clear_on_close: false,
+            show_preview: true,
+            remember_recent: true,
+            content_trigger: CONTENT_TRIGGERS[0].into(),
+        }
     }
 }
 
@@ -120,12 +134,29 @@ pub fn path(app: &AppHandle) -> Option<PathBuf> {
 pub fn load(app: &AppHandle) -> Settings {
     let Some(path) = path(app) else { return Settings::default() };
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+        Ok(text) => with_free_content_trigger(serde_json::from_str(&text).unwrap_or_else(|e| {
             log::warn!("Ignoring unreadable {}: {e}", path.display());
             Settings::default()
-        }),
+        })),
         Err(_) => Settings::default(),
     }
+}
+
+/// One shortcut starting with the other would leave one of the two searches
+/// out of reach.
+fn triggers_clash(a: &str, b: &str) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
+/// Settings from before the content search have its default shortcut, which
+/// the web search's may already be: another then, or every save would fail.
+fn with_free_content_trigger(mut s: Settings) -> Settings {
+    if triggers_clash(&s.search.content_trigger, &s.web.trigger) {
+        if let Some(t) = CONTENT_TRIGGERS.iter().find(|t| !triggers_clash(t, &s.web.trigger)) {
+            s.search.content_trigger = (*t).into();
+        }
+    }
+    s
 }
 
 /// Writes to a temporary file first, so the indexer never reads half a file.
@@ -172,6 +203,20 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     // web search.
     if s.web.trigger.starts_with('=') {
         return Err("= is the calculator's; pick another symbol for web search".into());
+    }
+    s.search.content_trigger = s.search.content_trigger.trim().to_string();
+    let n = s.search.content_trigger.chars().count();
+    if !(1..=2).contains(&n) || !s.search.content_trigger.chars().all(|c| c.is_ascii_punctuation()) {
+        return Err("The file contents shortcut has to be one or two symbols, like \\ or ;".into());
+    }
+    if s.search.content_trigger.starts_with('=') {
+        return Err("= is the calculator's; pick another symbol for searching file contents".into());
+    }
+    if triggers_clash(&s.search.content_trigger, &s.web.trigger) {
+        return Err(format!(
+            "{} is too close to the web search's {}; pick a symbol that doesn't start with the other",
+            s.search.content_trigger, s.web.trigger
+        ));
     }
 
     let mut folders: Vec<String> = Vec::new();
@@ -340,6 +385,34 @@ mod tests {
         assert!(with_trigger("").is_err());
         assert!(with_trigger("abc").is_err());
         assert!(with_trigger("///").is_err());
+    }
+
+    fn with_content_trigger(trigger: &str) -> Result<Settings, String> {
+        let mut s = Settings::default();
+        s.search.content_trigger = trigger.into();
+        validate(s)
+    }
+
+    #[test]
+    fn content_trigger_is_symbols_apart_from_the_others() {
+        assert_eq!(with_content_trigger(" ## ").unwrap().search.content_trigger, "##");
+        assert!(with_content_trigger("").is_err());
+        assert!(with_content_trigger("in").is_err());
+        assert!(with_content_trigger("=").is_err());
+        // The web search's is "/" by default.
+        assert!(with_content_trigger("/").is_err());
+        assert!(with_content_trigger("//").is_err());
+        assert!(with_trigger("\\").is_err());
+        assert!(with_trigger("\\/").is_err());
+    }
+
+    #[test]
+    fn old_settings_get_a_free_content_trigger() {
+        let mut s = Settings::default();
+        s.web.trigger = "\\".into();
+        assert_eq!(with_free_content_trigger(s.clone()).search.content_trigger, ";");
+        assert!(validate(with_free_content_trigger(s)).is_ok());
+        assert_eq!(with_free_content_trigger(Settings::default()).search.content_trigger, "\\");
     }
 
     #[test]

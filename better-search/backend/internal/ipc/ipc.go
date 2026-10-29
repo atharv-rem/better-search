@@ -11,6 +11,7 @@ import (
 // Request types.
 const (
 	TypeSearch  = "search"  // {query, limit}
+	TypeContent = "content" // {query, limit}: files containing the words, from Windows Search
 	TypeOpen    = "open"    // {file_id}: user opened a result, bump its ranking
 	TypeStatus  = "status"  // index state
 	TypeReindex = "reindex" // rebuild the whole index; shows the UAC prompt
@@ -26,10 +27,11 @@ const (
 
 // Error codes.
 const (
-	CodeAdminDenied = "admin_denied" // user declined the UAC prompt
-	CodeBusy        = "busy"         // indexing already running
-	CodeDiskFull    = "disk_full"    // the index's drive is out of space
-	CodeSuperseded  = "superseded"   // a newer search came in before this one finished
+	CodeAdminDenied = "admin_denied"      // user declined the UAC prompt
+	CodeBusy        = "busy"              // indexing already running
+	CodeDiskFull    = "disk_full"         // the index's drive is out of space
+	CodeSuperseded  = "superseded"        // a newer search came in before this one finished
+	CodeNoWinSearch = "no_windows_search" // Windows Search is off, so contents can't be searched
 )
 
 type Request struct {

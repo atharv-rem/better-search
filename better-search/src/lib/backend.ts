@@ -108,6 +108,13 @@ export const backend = {
     return (msg.results as SearchResult[]) ?? [];
   },
 
+  /** Files containing every word of `query`, from Windows Search, its best
+   *  matches first. Rejects with code "no_windows_search" when it's off. */
+  async searchContent(query: string, limit = 50): Promise<SearchResult[]> {
+    const msg = await request("content", { query, limit });
+    return (msg.results as SearchResult[]) ?? [];
+  },
+
   async status(): Promise<IndexStatus> {
     return (await request("status")).data as IndexStatus;
   },

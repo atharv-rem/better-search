@@ -1,6 +1,15 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { AppWindowIcon, ArrowCounterClockwiseIcon, GlobeIcon, LinkIcon, MagnifyingGlassIcon } from "@/lib/phosphor";
-import { DEFAULT_WEB_TRIGGER, type Settings } from "@/lib/settings";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  AppWindowIcon,
+  ArrowCounterClockwiseIcon,
+  ArrowSquareOutIcon,
+  FileMagnifyingGlassIcon,
+  GlobeIcon,
+  LinkIcon,
+  MagnifyingGlassIcon,
+} from "@/lib/phosphor";
+import { DEFAULT_CONTENT_TRIGGER, DEFAULT_WEB_TRIGGER, type Settings } from "@/lib/settings";
 import { ActionButton, Group, Keys, keysOf, Row } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
@@ -44,7 +53,35 @@ export function ShortcutsSection({ settings, save }: { settings: Settings; save:
         title="Typed in the search bar"
         footer="Type it at the start of a search, then your question. The search bar's hint changes to match."
       >
-        <WebTriggerRow trigger={settings.web.trigger} save={save} />
+        <TriggerRow
+          label="Web search"
+          what="the web search"
+          trigger={settings.web.trigger}
+          fallback={DEFAULT_WEB_TRIGGER}
+          example="cats"
+          does="to search the web"
+          icon={<GlobeIcon size={18} />}
+          save={(next) => save((s) => ({ ...s, web: { ...s.web, trigger: next } }))}
+        />
+        <TriggerRow
+          label="File contents"
+          what="the file contents search"
+          trigger={settings.search.content_trigger}
+          fallback={DEFAULT_CONTENT_TRIGGER}
+          example="tax notes"
+          does="to find files with those words inside, using Windows Search's index"
+          icon={<FileMagnifyingGlassIcon size={18} />}
+          save={(next) => save((s) => ({ ...s, search: { ...s.search, content_trigger: next } }))}
+        >
+          <ActionButton
+            aria-label="Open Windows indexing options"
+            title="Choose the folders Windows Search reads"
+            onClick={() => invoke("open_indexing_options").catch((err) => console.error("Failed to open indexing options:", err))}
+          >
+            <ArrowSquareOutIcon size={14} />
+            Indexed folders
+          </ActionButton>
+        </TriggerRow>
         <Row
           label="Calculator"
           description={
@@ -106,7 +143,30 @@ function BindingList({ bindings }: { bindings: Binding[] }) {
   );
 }
 
-function WebTriggerRow({ trigger, save }: { trigger: string; save: Save }) {
+/** A symbol typed at the start of a search to switch what it searches. */
+function TriggerRow({
+  label,
+  what,
+  trigger,
+  fallback,
+  example,
+  does,
+  icon,
+  save,
+  children,
+}: {
+  label: string;
+  /** For the input's label: "the web search". */
+  what: string;
+  trigger: string;
+  /** The default, which the reset button puts back. */
+  fallback: string;
+  example: string;
+  does: string;
+  icon: ReactNode;
+  save: (next: string) => Promise<string | null>;
+  children?: ReactNode;
+}) {
   const [draft, setDraft] = useState(trigger);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setDraft(trigger), [trigger]);
@@ -114,26 +174,27 @@ function WebTriggerRow({ trigger, save }: { trigger: string; save: Save }) {
   const apply = async (next: string) => {
     next = next.trim();
     if (next === trigger) return setDraft(trigger);
-    const err = await save((s) => ({ ...s, web: { ...s.web, trigger: next } }));
+    const err = await save(next);
     setError(err);
     if (err) setDraft(trigger);
   };
 
   return (
     <Row
-      label="Web search"
+      label={label}
       description={
         <>
-          Start a search with <Example>{trigger} cats</Example> to search the web. One or two symbols.
+          Start a search with <Example>{trigger} {example}</Example> {does}. One or two symbols.
         </>
       }
       error={error}
-      icon={<GlobeIcon size={18} />}
+      icon={icon}
     >
-      {trigger !== DEFAULT_WEB_TRIGGER && (
-        <ActionButton aria-label={`Reset to ${DEFAULT_WEB_TRIGGER}`} onClick={() => apply(DEFAULT_WEB_TRIGGER)}>
+      {children}
+      {trigger !== fallback && (
+        <ActionButton aria-label={`Reset to ${fallback}`} onClick={() => apply(fallback)}>
           <ArrowCounterClockwiseIcon size={14} />
-          Reset to {DEFAULT_WEB_TRIGGER}
+          Reset to {fallback}
         </ActionButton>
       )}
       <input
@@ -142,7 +203,7 @@ function WebTriggerRow({ trigger, save }: { trigger: string; save: Save }) {
         onBlur={() => apply(draft)}
         onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
         maxLength={2}
-        aria-label="Web search shortcut"
+        aria-label={`Shortcut for ${what}`}
         spellCheck={false}
         className="h-7 w-14 rounded-md bg-white/[0.07] px-2.5 text-center font-mono text-[13px] leading-4 font-medium text-white outline-hidden transition-colors hover:bg-white/[0.11] focus:bg-white/[0.11] focus:ring-1 focus:ring-[#6B97FF]"
       />

@@ -22,6 +22,7 @@ import (
 	"better-search/backend/internal/ipc"
 	"better-search/backend/internal/memory"
 	"better-search/backend/internal/search"
+	"better-search/backend/internal/winsearch"
 )
 
 // The search helper (better-search-helper.exe): answers the app's searches
@@ -69,17 +70,28 @@ func main() {
 	// shown: each new search cancels the one before, which stops mid-query
 	// rather than queueing the new one behind it. Called from the request loop
 	// only, so cancelSearch needs no lock.
+	// A content search replaces a name search too: the box shows one or the
+	// other.
 	cancelSearch := context.CancelFunc(func() {})
+	contents := winsearch.New()
 	startSearch := func(req ipc.Request) {
 		cancelSearch()
 		ctx, cancel := context.WithCancel(context.Background())
 		cancelSearch = cancel
 		go func() {
 			defer cancel()
-			results, err := search.Search(ctx, db, req.Query, req.Limit, excluded.skip)
+			var results []search.Result
+			var err error
+			if req.Type == ipc.TypeContent {
+				results, err = search.Content(ctx, db, contents, req.Query, req.Limit, excluded.skip)
+			} else {
+				results, err = search.Search(ctx, db, req.Query, req.Limit, excluded.skip)
+			}
 			switch {
 			case ctx.Err() != nil:
 				out.ErrorCode(req.ID, req.Type, ipc.CodeSuperseded, "a newer search replaced this one")
+			case errors.Is(err, winsearch.ErrUnavailable):
+				out.ErrorCode(req.ID, req.Type, ipc.CodeNoWinSearch, err.Error())
 			case err != nil:
 				out.Error(req.ID, req.Type, err.Error())
 			default:
@@ -109,7 +121,7 @@ func main() {
 		}
 
 		switch req.Type {
-		case ipc.TypeSearch:
+		case ipc.TypeSearch, ipc.TypeContent:
 			startSearch(req)
 
 		case ipc.TypeOpen:
@@ -141,6 +153,7 @@ func main() {
 			})
 
 		case ipc.TypeTrim:
+			contents.Release()
 			db.Trim()
 			memory.Trim()
 

@@ -629,6 +629,13 @@ fn uninstall_app(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Windows' Indexing Options, where the user picks the folders Windows
+/// Search reads, so the content search ("\") can find what's in them.
+#[tauri::command]
+fn open_indexing_options() -> Result<(), String> {
+    std::process::Command::new("control.exe").arg("srchadmin.dll").spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn open_logs_folder(app: AppHandle) -> Result<(), String> {
     let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
@@ -1474,6 +1481,7 @@ pub fn run() {
             quit_app,
             uninstall_app,
             open_logs_folder,
+            open_indexing_options,
             logs::recent_problems,
             can_update,
             pending_update,

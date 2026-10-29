@@ -251,3 +251,99 @@ func joinPath(dir, name string) string {
 	}
 	return dir + `\` + name
 }
+
+const (
+	rootByNameSQL = `SELECT id FROM files WHERE parent_id IS NULL AND name = ? COLLATE NOCASE`
+	// Exact first: that can use the (parent_id, name) index.
+	childSQL       = `SELECT id, is_dir, size, modified_at, open_count, coalesce(last_opened, 0) FROM files WHERE parent_id = ? AND name = ?`
+	childNoCaseSQL = `SELECT id, is_dir, size, modified_at, open_count, coalesce(last_opened, 0) FROM files WHERE parent_id = ? AND name = ? COLLATE NOCASE`
+)
+
+// FilesAt finds the row for each full path, like C:\Users\me\a.txt, walking
+// down one folder at a time as Changes.FindByPath does. A path the index
+// doesn't have gets a File with ID 0. Folders on the way are looked up once
+// for all the paths: they share most of them. Name is the path's last part.
+func (d *DB) FilesAt(ctx context.Context, paths []string) ([]File, error) {
+	out := make([]File, len(paths))
+	dirs := map[string]int64{} // lower-cased folder path -> id, 0 when missing
+	for i, p := range paths {
+		p = strings.TrimRight(p, `\`)
+		cut := strings.LastIndexByte(p, '\\')
+		if cut < 0 {
+			continue
+		}
+		out[i].Name = p[cut+1:]
+		dir, err := d.dirID(ctx, p[:cut], dirs)
+		if err != nil {
+			return nil, err
+		}
+		if dir == 0 {
+			continue
+		}
+		f, err := d.child(ctx, dir, out[i].Name)
+		if err != nil {
+			return nil, err
+		}
+		if f.ID != 0 {
+			f.Name, f.ParentID = out[i].Name, dir
+			out[i] = f
+		}
+	}
+	return out, nil
+}
+
+// dirID is the id of a folder, from memo where a path before has passed
+// through it; 0 when the index doesn't have it.
+func (d *DB) dirID(ctx context.Context, path string, memo map[string]int64) (int64, error) {
+	key := strings.ToLower(path)
+	if id, ok := memo[key]; ok {
+		return id, nil
+	}
+	var id int64
+	cut := strings.LastIndexByte(path, '\\')
+	if cut < 0 {
+		s, err := d.prepared(rootByNameSQL)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.QueryRowContext(ctx, path).Scan(&id); err != nil && err != sql.ErrNoRows {
+			return 0, err
+		}
+	} else {
+		parent, err := d.dirID(ctx, path[:cut], memo)
+		if err != nil {
+			return 0, err
+		}
+		if parent != 0 {
+			f, err := d.child(ctx, parent, path[cut+1:])
+			if err != nil {
+				return 0, err
+			}
+			if f.IsDir {
+				id = f.ID
+			}
+		}
+	}
+	memo[key] = id
+	return id, nil
+}
+
+// child is the row named name in the folder parent, by exact name and then
+// ignoring case; ID 0 when there's none.
+func (d *DB) child(ctx context.Context, parent int64, name string) (File, error) {
+	var f File
+	for _, q := range [2]string{childSQL, childNoCaseSQL} {
+		s, err := d.prepared(q)
+		if err != nil {
+			return f, err
+		}
+		err = s.QueryRowContext(ctx, parent, name).Scan(&f.ID, &f.IsDir, &f.Size, &f.ModifiedAt, &f.OpenCount, &f.LastOpened)
+		if err == nil {
+			return f, nil
+		}
+		if err != sql.ErrNoRows {
+			return f, err
+		}
+	}
+	return File{}, nil
+}

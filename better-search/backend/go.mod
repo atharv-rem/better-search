@@ -3,6 +3,7 @@ module better-search/backend
 go 1.26
 
 require (
+	github.com/go-ole/go-ole v1.3.0
 	golang.org/x/sys v0.47.0
 	modernc.org/libc v1.75.6
 	modernc.org/sqlite v1.58.0

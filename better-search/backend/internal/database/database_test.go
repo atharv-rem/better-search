@@ -175,3 +175,35 @@ func TestBulkDropsDuplicateNames(t *testing.T) {
 		t.Fatalf("indexes after a full index: %d %v", indexes, err)
 	}
 }
+
+func TestFilesAt(t *testing.T) {
+	db := openTest(t)
+	load(t, db, tree)
+	if err := db.MarkOpened(30); err != nil {
+		t.Fatal(err)
+	}
+	files, err := db.FilesAt(context.Background(), []string{
+		`C:\Users\atharv\Resume.pdf`,
+		`c:\users\ATHARV\ab.txt`,           // case differs from the index
+		`C:\Users\atharv\missing.txt`,      // not in the index
+		`C:\Users\nobody\Resume.pdf`,       // nor its folder
+		`D:\Resume.pdf`,                    // nor its drive
+		`C:\Users\atharv\Resume.pdf\x.txt`, // a file is no folder
+		`C:`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		id   int64
+		name string
+	}{{30, "Resume.pdf"}, {32, "ab.txt"}, {0, "missing.txt"}, {0, "Resume.pdf"}, {0, "Resume.pdf"}, {0, "x.txt"}, {0, ""}}
+	for i, w := range want {
+		if files[i].ID != w.id || files[i].Name != w.name {
+			t.Errorf("%d: got id %d name %q, want %d %q", i, files[i].ID, files[i].Name, w.id, w.name)
+		}
+	}
+	if f := files[0]; f.ParentID != 21 || f.Size != 1000 || f.OpenCount != 1 || f.LastOpened == 0 {
+		t.Errorf("Resume.pdf fields: %+v", f)
+	}
+}
