@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0](https://github.com/atharv-rem/better-search/compare/v0.5.0...v0.6.0) (2026-10-29)
+
+
+### Features
+
+* add content search functionality using Windows Search ([7dd3d9e](https://github.com/atharv-rem/better-search/commit/7dd3d9e9ec0784d0c54f71699238e001443eaa77))
+* add image indexing feature using Windows OCR ([b59907d](https://github.com/atharv-rem/better-search/commit/b59907df663ab7e32b0d94b55fb6e56c6e6ae54a))
+* expand web search options to include AI assistants and update related functionality ([458329d](https://github.com/atharv-rem/better-search/commit/458329dd6a2626176725bf6ad09cf6bb9f7b4890))
+
 ## [0.5.0](https://github.com/atharv-rem/better-search/compare/v0.4.1...v0.5.0) (2026-10-28)
 
 
