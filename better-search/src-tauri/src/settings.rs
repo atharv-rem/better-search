@@ -101,7 +101,17 @@ const DEFAULT_WEB_TRIGGER: &str = "/";
 /// shortcut already is it.
 const CONTENT_TRIGGERS: [&str; 3] = ["\\", ";", "~"];
 const UI_SCALE_STEP: f64 = 0.1;
-const ENGINES: [&str; 5] = ["google", "bing", "duckduckgo", "brave", "custom"];
+const ENGINES: [&str; 9] = [
+    "google",
+    "bing",
+    "duckduckgo",
+    "brave",
+    "google-ai",
+    "chatgpt",
+    "claude",
+    "perplexity",
+    "custom",
+];
 
 impl Default for Settings {
     fn default() -> Self {

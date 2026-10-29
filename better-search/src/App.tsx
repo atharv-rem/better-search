@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { usePendingUpdate } from "@/lib/update";
 import { panelShadow, shortcutPill } from "@/lib/surface-classes";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
-import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchUrl, type Settings } from "@/lib/settings";
+import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchLabel, webSearchUrl, type Settings } from "@/lib/settings";
 import { providerOf, webSearch, type WebResult } from "@/lib/web-search";
 
 type IndexState =
@@ -1046,7 +1046,7 @@ function App() {
                       <>
                         <GlobalSearchIcon size={ROW_ICON_SIZE} className="shrink-0" />
                         <span className="truncate">
-                          {webQuery ? `Search the web for “${webQuery}”` : "Type something to search the web"}
+                          {webSearchLabel(settings.web, webQuery)}
                         </span>
                       </>
                     )}

@@ -31,7 +31,7 @@ Only when you use web search, and only as follows:
 
 - **Web search with an API key.** If you add a key for Exa, Firecrawl, TinyFish or Context.dev, the text you type is sent to that provider, with your key, to fetch results. It is not sent to anyone else, and nothing is sent until you add a key. The provider's own privacy policy applies to what it receives.
 - **Result icons.** To show a site's icon beside a web result, the app asks that site directly for its favicon. The site can see your IP address, as with any request.
-- **Search in your browser.** Choosing Google, Bing, DuckDuckGo, Brave Search or your own address opens that search in your default browser. Better Search sends nothing itself.
+- **Search in your browser.** Choosing Google, Bing, DuckDuckGo, Brave Search, Google AI Mode, ChatGPT, Claude, Perplexity or your own address opens that search in your default browser. Better Search sends nothing itself.
 - **Updates.** The Microsoft Store delivers updates. The app doesn't contact any server to check for them.
 
 You can remove an API key in Settings at any time, which stops sending queries to that provider.

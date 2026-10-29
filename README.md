@@ -23,7 +23,7 @@ Better Search reads your drives' file list once and keeps it up to date in the b
 - **Calculator.** Start or end with `=` to work something out, like `=12*4`. It handles exact decimals, units and percentages offline. **Enter** copies the answer.
 - **Websites.** Type an address, like `github.com`, to open it in your browser.
 - **Web search.** Start with `/` to search the web. You can change the symbol in settings.
-  - Searches open in your choice of Google, Bing, DuckDuckGo, Brave or a custom search URL.
+  - Searches open in your choice of Google, Bing, DuckDuckGo, Brave or a custom search URL, or go straight to Google AI Mode, ChatGPT, Claude or Perplexity as a question.
   - Pick the browser they open in. **Tab** switches browsers right in the search.
   - Bring your own API key for Exa, Firecrawl, TinyFish or Context.dev to see web results right in the search window. Your keys are kept in Windows Credential Manager, and the settings page shows each key's usage.
 

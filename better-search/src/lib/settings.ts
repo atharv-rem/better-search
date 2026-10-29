@@ -88,6 +88,11 @@ export const SEARCH_ENGINES = [
   { id: "bing", name: "Bing", url: "https://www.bing.com/search?q=%s" },
   { id: "duckduckgo", name: "DuckDuckGo", url: "https://duckduckgo.com/?q=%s" },
   { id: "brave", name: "Brave Search", url: "https://search.brave.com/search?q=%s" },
+  // Assistants: the search is asked as a question.
+  { id: "google-ai", name: "Google AI Mode", url: "https://www.google.com/search?udm=50&q=%s", ask: true },
+  { id: "chatgpt", name: "ChatGPT", url: "https://chatgpt.com/?q=%s", ask: true },
+  { id: "claude", name: "Claude", url: "https://claude.ai/new?q=%s", ask: true },
+  { id: "perplexity", name: "Perplexity", url: "https://www.perplexity.ai/search?q=%s", ask: true },
 ] as const;
 
 export type SearchEngineId = (typeof SEARCH_ENGINES)[number]["id"];
@@ -97,6 +102,13 @@ export function webSearchUrl(web: Settings["web"], text: string) {
   const template =
     web.engine === "custom" ? web.custom_url : (SEARCH_ENGINES.find((e) => e.id === web.engine) ?? SEARCH_ENGINES[0]).url;
   return template.split("%s").join(encodeURIComponent(text));
+}
+
+/** The web search row's text: an assistant is asked, anything else searches the web. */
+export function webSearchLabel(web: Settings["web"], text: string) {
+  const engine = web.engine === "custom" ? undefined : SEARCH_ENGINES.find((e) => e.id === web.engine);
+  if (engine && "ask" in engine) return text ? `Ask ${engine.name} “${text}”` : `Type something to ask ${engine.name}`;
+  return text ? `Search the web for “${text}”` : "Type something to search the web";
 }
 
 /** Saves the whole settings. Rejects with a message to show (a shortcut
