@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { AiProviderId } from "@/lib/ai";
 import type { ProviderId } from "@/lib/web-search";
 
 // The user's settings. The shell owns them (settings.rs, which also checks
@@ -33,6 +34,17 @@ export interface Settings {
     /** What a search starts with to search the web, like "/". */
     trigger: string;
   };
+  /** Answers from an AI model (ai.rs). */
+  ai: {
+    provider: AiProviderId | "off";
+    /** The model picked for each provider; one without uses its default. */
+    models: Partial<Record<AiProviderId, string>>;
+    /** What a search starts with to ask the AI, like "?". */
+    trigger: string;
+    /** Search the web first, with the web search's provider, and answer
+     *  from the results. */
+    web_sources: boolean;
+  };
   /** Applied the next time the index is rebuilt. */
   indexing: {
     excluded_drives: string[];
@@ -57,6 +69,7 @@ export interface Settings {
 
 export const DEFAULT_WEB_TRIGGER = "/";
 export const DEFAULT_CONTENT_TRIGGER = "\\";
+export const DEFAULT_AI_TRIGGER = "?";
 
 /** Until the saved ones arrive. Matches `Settings::default` in settings.rs. */
 export const DEFAULT_SETTINGS: Settings = {
@@ -70,6 +83,7 @@ export const DEFAULT_SETTINGS: Settings = {
     content_trigger: DEFAULT_CONTENT_TRIGGER,
   },
   web: { engine: "google", custom_url: "", browser: "default", provider: "browser", trigger: DEFAULT_WEB_TRIGGER },
+  ai: { provider: "off", models: {}, trigger: DEFAULT_AI_TRIGGER, web_sources: true },
   indexing: { excluded_drives: [], excluded_folders: [] },
   images: { enabled: false, folders: [] },
   ui_scale: 1,

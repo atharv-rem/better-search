@@ -9,6 +9,7 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
+mod ai;
 mod calc;
 mod docx;
 mod images;
@@ -1576,6 +1577,12 @@ pub fn run() {
             web_search::web_search,
             web_search::favicon,
             web_search::api_usage,
+            ai::ai_keys,
+            ai::save_ai_key,
+            ai::remove_ai_key,
+            ai::ai_models,
+            ai::ask_ai,
+            ai::stop_ai,
             recent::add_recent_search,
             recent::clear_recent_searches,
             calc::calculate,

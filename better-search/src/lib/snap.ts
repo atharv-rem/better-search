@@ -42,16 +42,16 @@ export interface SnapLayout {
 }
 
 const zone = (x: number, y: number, width: number, height: number): Zone => ({ x, y, width, height });
-const THIRD = 1 / 3;
 
-/** Every layout the snap mode offers, in the order of the row above the bar. */
+/** Every layout the snap mode offers, in the order of the row above the bar:
+ *  Windows' own Snap Layouts (Win+Z), in its order and proportions. */
 export const LAYOUTS: SnapLayout[] = [
   { name: "Halves", zones: [zone(0, 0, 0.5, 1), zone(0.5, 0, 0.5, 1)] },
+  { name: "Wide and narrow", zones: [zone(0, 0, 0.6, 1), zone(0.6, 0, 0.4, 1)] },
   {
     name: "Half and two quarters",
     zones: [zone(0, 0, 0.5, 1), zone(0.5, 0, 0.5, 0.5), zone(0.5, 0.5, 0.5, 0.5)],
   },
-  { name: "Two-thirds and a third", zones: [zone(0, 0, 2 * THIRD, 1), zone(2 * THIRD, 0, THIRD, 1)] },
   {
     name: "Quarters",
     zones: [zone(0, 0, 0.5, 0.5), zone(0.5, 0, 0.5, 0.5), zone(0, 0.5, 0.5, 0.5), zone(0.5, 0.5, 0.5, 0.5)],

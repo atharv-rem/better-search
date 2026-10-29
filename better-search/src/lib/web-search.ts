@@ -59,7 +59,8 @@ export interface WebResult {
 }
 
 export interface KeyStatus {
-  provider: ProviderId;
+  /** A web search provider's id, or an AI provider's (ai.ts). */
+  provider: string;
   /** The key's last four characters; null when there's no key. */
   hint: string | null;
 }

@@ -9,7 +9,7 @@ import {
   LinkIcon,
   MagnifyingGlassIcon,
 } from "@/lib/phosphor";
-import { DEFAULT_CONTENT_TRIGGER, DEFAULT_WEB_TRIGGER, type Settings } from "@/lib/settings";
+import { DEFAULT_AI_TRIGGER, DEFAULT_CONTENT_TRIGGER, DEFAULT_WEB_TRIGGER, type Settings } from "@/lib/settings";
 import { ActionButton, Group, Keys, keysOf, Row } from "@/settings/controls";
 
 type Save = (change: (s: Settings) => Settings) => Promise<string | null>;
@@ -82,6 +82,16 @@ export function ShortcutsSection({ settings, save }: { settings: Settings; save:
             Indexed folders
           </ActionButton>
         </TriggerRow>
+        <TriggerRow
+          label="Ask AI"
+          what="asking AI"
+          trigger={settings.ai.trigger}
+          fallback={DEFAULT_AI_TRIGGER}
+          example="why is the sky blue"
+          does="and press Enter to ask the AI chosen in API keys"
+          icon={<span className="flex size-[18px] items-center justify-center text-[15px] leading-none font-medium">?</span>}
+          save={(next) => save((s) => ({ ...s, ai: { ...s.ai, trigger: next } }))}
+        />
         <Row
           label="Calculator"
           description={

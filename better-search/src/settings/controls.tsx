@@ -95,11 +95,15 @@ export function Select<T extends string | number>({
   options,
   onChange,
   label,
+  alwaysBelow = false,
 }: {
   value: T;
   options: readonly { value: T; label: string; icon?: ReactNode }[];
   onChange: (value: T) => void;
   label: string;
+  /** Open below even when the list doesn't fit there, scrolling instead of
+   *  flipping up (long lists, which would flip every time). */
+  alwaysBelow?: boolean;
 }) {
   const current = options.find((o) => o.value === value) ?? options[0];
   return (
@@ -112,7 +116,7 @@ export function Select<T extends string | number>({
         <span className="truncate">{current?.label}</span>
         <CaretDownIcon size={12} className="shrink-0 text-zinc-400" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="dark min-w-40 border-white/10 bg-zinc-950 text-white">
+      <DropdownMenuContent align="end" avoidCollisions={!alwaysBelow} className="dark min-w-40 border-white/10 bg-zinc-950 text-white">
         {options.map((o) => (
           <DropdownMenuItem
             key={o.value}

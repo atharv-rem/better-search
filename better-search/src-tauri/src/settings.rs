@@ -3,7 +3,7 @@
 //! `update_settings`, and the backend's indexer reads its "indexing" section
 //! (the sidecar gets the path as `-settings`).
 
-use std::{path::PathBuf, str::FromStr, sync::Mutex};
+use std::{collections::BTreeMap, path::PathBuf, str::FromStr, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -17,6 +17,8 @@ pub struct Settings {
     pub shortcut: String,
     pub search: SearchSettings,
     pub web: WebSettings,
+    /// Answers from an AI model (ai.rs).
+    pub ai: AiSettings,
     pub indexing: IndexingSettings,
     /// Reading the text in images with Windows' OCR (images.rs).
     pub images: ImageSettings,
@@ -73,6 +75,21 @@ pub struct WebSettings {
     pub trigger: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiSettings {
+    /// One of `ai::PROVIDERS`, or "off".
+    pub provider: String,
+    /// The model picked for each provider, by provider; a provider without one
+    /// uses its default.
+    pub models: BTreeMap<String, String>,
+    /// What a search starts with to ask the AI instead, like "?".
+    pub trigger: String,
+    /// Search the web first (with the web search's provider, when there is
+    /// one) and answer from the results, citing them.
+    pub web_sources: bool,
+}
+
 /// Read by the backend's indexer (indexer/options.go); they apply the next
 /// time the index is rebuilt.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -100,6 +117,8 @@ const DEFAULT_WEB_TRIGGER: &str = "/";
 /// The first is the default; the others stand in when the web search's
 /// shortcut already is it.
 const CONTENT_TRIGGERS: [&str; 3] = ["\\", ";", "~"];
+/// As `CONTENT_TRIGGERS`, for asking the AI.
+const AI_TRIGGERS: [&str; 3] = ["?", "!", ">"];
 const UI_SCALE_STEP: f64 = 0.1;
 const ENGINES: [&str; 9] = [
     "google",
@@ -119,6 +138,7 @@ impl Default for Settings {
             shortcut: DEFAULT_SHORTCUT.into(),
             search: SearchSettings::default(),
             web: WebSettings::default(),
+            ai: AiSettings::default(),
             indexing: IndexingSettings::default(),
             images: ImageSettings::default(),
             ui_scale: 1.0,
@@ -147,6 +167,12 @@ impl Default for WebSettings {
     }
 }
 
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self { provider: "off".into(), models: BTreeMap::new(), trigger: AI_TRIGGERS[0].into(), web_sources: true }
+    }
+}
+
 pub struct SettingsState(pub Mutex<Settings>);
 
 pub fn path(app: &AppHandle) -> Option<PathBuf> {
@@ -172,12 +198,19 @@ fn triggers_clash(a: &str, b: &str) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
-/// Settings from before the content search have its default shortcut, which
-/// the web search's may already be: another then, or every save would fail.
+/// Settings from before the content search (or asking the AI) have its
+/// default shortcut, which another search's may already be: another then, or
+/// every save would fail.
 fn with_free_content_trigger(mut s: Settings) -> Settings {
     if triggers_clash(&s.search.content_trigger, &s.web.trigger) {
         if let Some(t) = CONTENT_TRIGGERS.iter().find(|t| !triggers_clash(t, &s.web.trigger)) {
             s.search.content_trigger = (*t).into();
+        }
+    }
+    let taken = |t: &str| triggers_clash(t, &s.web.trigger) || triggers_clash(t, &s.search.content_trigger);
+    if taken(&s.ai.trigger) {
+        if let Some(t) = AI_TRIGGERS.iter().find(|t| !taken(t)) {
+            s.ai.trigger = (*t).into();
         }
     }
     s
@@ -221,7 +254,7 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
     s.web.trigger = s.web.trigger.trim().to_string();
     let n = s.web.trigger.chars().count();
     if !(1..=2).contains(&n) || !s.web.trigger.chars().all(|c| c.is_ascii_punctuation()) {
-        return Err("The web search shortcut has to be one or two symbols, like / or ?".into());
+        return Err("The web search shortcut has to be one or two symbols, like / or #".into());
     }
     // "=" starts a calculation; as the trigger it would turn every one into a
     // web search.
@@ -241,6 +274,31 @@ fn validate(mut s: Settings) -> Result<Settings, String> {
             "{} is too close to the web search's {}; pick a symbol that doesn't start with the other",
             s.search.content_trigger, s.web.trigger
         ));
+    }
+
+    if !crate::ai::PROVIDERS.contains(&s.ai.provider.as_str()) {
+        s.ai.provider = "off".into();
+    }
+    s.ai.models = std::mem::take(&mut s.ai.models)
+        .into_iter()
+        .map(|(provider, model)| (provider, model.trim().to_string()))
+        .filter(|(provider, model)| crate::ai::PROVIDERS.contains(&provider.as_str()) && !model.is_empty() && model.len() <= 200)
+        .collect();
+    s.ai.trigger = s.ai.trigger.trim().to_string();
+    let n = s.ai.trigger.chars().count();
+    if !(1..=2).contains(&n) || !s.ai.trigger.chars().all(|c| c.is_ascii_punctuation()) {
+        return Err("The ask AI shortcut has to be one or two symbols, like ? or !".into());
+    }
+    if s.ai.trigger.starts_with('=') {
+        return Err("= is the calculator's; pick another symbol for asking AI".into());
+    }
+    for (other, what) in [(&s.web.trigger, "web search"), (&s.search.content_trigger, "file contents search")] {
+        if triggers_clash(&s.ai.trigger, other) {
+            return Err(format!(
+                "{} is too close to the {what}'s {other}; pick a symbol that doesn't start with the other",
+                s.ai.trigger
+            ));
+        }
     }
 
     let mut folders: Vec<String> = Vec::new();
@@ -433,7 +491,7 @@ mod tests {
 
     #[test]
     fn web_trigger_is_one_or_two_symbols() {
-        assert_eq!(with_trigger(" ?? ").unwrap().web.trigger, "??");
+        assert_eq!(with_trigger(" ## ").unwrap().web.trigger, "##");
         assert!(with_trigger("").is_err());
         assert!(with_trigger("abc").is_err());
         assert!(with_trigger("///").is_err());
@@ -465,6 +523,46 @@ mod tests {
         assert_eq!(with_free_content_trigger(s.clone()).search.content_trigger, ";");
         assert!(validate(with_free_content_trigger(s)).is_ok());
         assert_eq!(with_free_content_trigger(Settings::default()).search.content_trigger, "\\");
+    }
+
+    #[test]
+    fn ai_trigger_is_apart_from_the_others() {
+        let with_ai = |trigger: &str| {
+            let mut s = Settings::default();
+            s.ai.trigger = trigger.into();
+            validate(s)
+        };
+        assert_eq!(with_ai(" !! ").unwrap().ai.trigger, "!!");
+        assert!(with_ai("").is_err());
+        assert!(with_ai("ask").is_err());
+        assert!(with_ai("=").is_err());
+        assert!(with_ai("/").is_err());
+        assert!(with_ai("\\").is_err());
+        // "?" is the AI's by default.
+        assert!(with_trigger("?").is_err());
+        assert!(with_trigger("??").is_err());
+    }
+
+    #[test]
+    fn old_settings_get_a_free_ai_trigger() {
+        let mut s = Settings::default();
+        s.web.trigger = "?".into();
+        assert_eq!(with_free_content_trigger(s.clone()).ai.trigger, "!");
+        assert!(validate(with_free_content_trigger(s)).is_ok());
+        let old: Settings = serde_json::from_str(r#"{"shortcut":"Alt+S"}"#).unwrap();
+        assert_eq!((old.ai.provider.as_str(), old.ai.trigger.as_str()), ("off", "?"));
+    }
+
+    #[test]
+    fn ai_settings_are_tidied() {
+        let mut s = Settings::default();
+        s.ai.provider = "mistral".into();
+        s.ai.models.insert("openai".into(), " gpt-5 ".into());
+        s.ai.models.insert("groq".into(), "  ".into());
+        s.ai.models.insert("nobody".into(), "x".into());
+        let s = validate(s).unwrap();
+        assert_eq!(s.ai.provider, "off");
+        assert_eq!(s.ai.models.into_iter().collect::<Vec<_>>(), vec![("openai".to_string(), "gpt-5".to_string())]);
     }
 
     #[test]

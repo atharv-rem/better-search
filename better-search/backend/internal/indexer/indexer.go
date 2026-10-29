@@ -102,6 +102,9 @@ var DefaultExcludedPaths = []string{
 	`Program Files\Go\test`,
 
 	// App internals.
+	`Users\*\AppData\Local\better-search`, // our own index, logs and settings (storage.rs)
+	`better-search-data`,                  // our index moved to another drive (storage.rs INDEX_FOLDER)
+	`Users\*\CrossDevice`,                 // Phone Link's view of a phone: opening a file there fails with a dialog while the phone is off
 	`Program Files\WindowsApps`,
 	`Users\*\AppData\Local\Packages`,
 	`Users\*\AppData\Local\Temp`,

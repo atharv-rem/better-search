@@ -289,9 +289,9 @@ fn place_all(placements: Vec<Placement>, (left, top, width, height): (f64, f64, 
 unsafe fn in_place(hwnd: windows::Win32::Foundation::HWND, x: i32, y: i32, width: i32, height: i32) -> bool {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsZoomed};
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowArranged, IsZoomed};
 
-    if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() {
+    if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() || IsWindowArranged(hwnd).as_bool() {
         return false;
     }
     let mut frame = RECT::default();
@@ -502,12 +502,14 @@ unsafe fn place(hwnd: windows::Win32::Foundation::HWND, x: i32, y: i32, width: i
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsIconic, IsZoomed, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
-        SW_RESTORE,
+        GetWindowRect, IsIconic, IsWindowArranged, IsZoomed, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE,
+        SWP_NOOWNERZORDER, SW_RESTORE,
     };
 
-    // A maximized or minimized window ignores a new size until restored.
-    if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() {
+    // A maximized or minimized window ignores a new size until restored, and
+    // so does one Windows snapped (arranged): moved as it is, Windows unsnaps
+    // it back to its size from before, over ours.
+    if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() || IsWindowArranged(hwnd).as_bool() {
         let _ = ShowWindow(hwnd, SW_RESTORE);
     }
     // Twice: moved onto a monitor of another scale, the window resizes itself

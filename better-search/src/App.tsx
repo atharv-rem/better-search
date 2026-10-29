@@ -18,6 +18,7 @@ import { SearchBox } from "@/components/search-box";
 import { PreviewPanel } from "@/components/preview-panel";
 import { SearchResults } from "@/components/search-results";
 import { WebResults } from "@/components/web-results";
+import { StreamedReply } from "@/components/streamed-reply";
 import { TypeFilter } from "@/components/type-filter";
 import { SnapHeader, WindowList } from "@/components/snap-picker";
 import { useSnap } from "@/hooks/use-snap";
@@ -29,6 +30,7 @@ import { panelShadow, shortcutPill } from "@/lib/surface-classes";
 import { backend, BackendError, type IndexProgress, type SearchResult } from "@/lib/backend";
 import { DEFAULT_SETTINGS, saveSettings, useSettings, webSearchLabel, webSearchUrl, type Settings } from "@/lib/settings";
 import { providerOf, webSearch, type WebResult } from "@/lib/web-search";
+import { aiProviderOf, askAi, stopAi, type AiProvider, type AiSource } from "@/lib/ai";
 
 type IndexState =
   | { kind: "checking" }
@@ -44,6 +46,19 @@ type WebState =
   | { kind: "loading"; query: string }
   | { kind: "done"; query: string; results: WebResult[] }
   | { kind: "error"; query: string; message: string };
+
+/** An answer from the user's AI, for the question it was for. `id` tells
+ *  asking the same question again from the first time. */
+type AiState = {
+  id: number;
+  question: string;
+  /** "reading": the web, or waiting for the first word. */
+  phase: "reading" | "streaming" | "done" | "error";
+  answer: string;
+  sources: AiSource[];
+  /** Why there's no answer, for "error". */
+  message?: string;
+};
 
 const SEARCH_DEBOUNCE_MS = 100;
 
@@ -84,6 +99,21 @@ function webQueryOf(query: string, trigger: string) {
  *  else. `trigger` is the user's shortcut for it ("\" by default). */
 function contentQueryOf(query: string, trigger: string) {
   return query.startsWith(trigger) ? query.slice(trigger.length).trim() : null;
+}
+
+/** "? why is the sky blue" asks the AI; null for anything else. `trigger` is
+ *  the user's shortcut for it ("?" by default). */
+function aiQueryOf(query: string, trigger: string) {
+  return query.startsWith(trigger) ? query.slice(trigger.length).trim() : null;
+}
+
+/** An AI provider's logo, on the same white tile as the web results ones. */
+function AiBadge({ provider }: { provider: AiProvider }) {
+  return (
+    <span className="grid size-4 shrink-0 place-items-center rounded-[4px] bg-white">
+      <img src={provider.logo} alt="" className="size-3 object-contain" draggable={false} />
+    </span>
+  );
 }
 
 /** What came of the newest content search, for the query it was for. */
@@ -308,13 +338,16 @@ function App() {
   const contentTrigger = settings.search.content_trigger;
   // Off hides image results; their text stays until deleted in settings.
   const imagesOn = settings.images.enabled;
-  // Settings keep the two shortcuts from starting with each other.
+  // Settings keep the shortcuts from starting with each other.
   const contentQuery = webQuery === null ? contentQueryOf(query, contentTrigger) : null;
-  // The web search shortcut wins if the user has set it to "=".
-  const calcQuery = webQuery === null && contentQuery === null ? calcQueryOf(query) : null;
+  const aiTrigger = settings.ai.trigger;
+  const aiQuery = webQuery === null && contentQuery === null ? aiQueryOf(query, aiTrigger) : null;
+  // The other shortcuts win if the user has set one to "=".
+  const calcQuery = webQuery === null && contentQuery === null && aiQuery === null ? calcQueryOf(query) : null;
   // A typed URL opens the site instead of searching files or the web for it,
   // also after the web search shortcut ("/github.com").
-  const urlQuery = webQuery !== null ? urlOf(webQuery) : calcQuery === null && contentQuery === null ? urlOf(query) : null;
+  const urlQuery =
+    webQuery !== null ? urlOf(webQuery) : calcQuery === null && contentQuery === null && aiQuery === null ? urlOf(query) : null;
   const [contentState, setContentState] = useState<ContentState | null>(null);
   const contentShown = contentQuery && contentState?.query === contentQuery ? contentState.kind : null;
   const rememberRecent = settings.search.remember_recent;
@@ -338,6 +371,21 @@ function App() {
   const [webState, setWebState] = useState<WebState>({ kind: "idle" });
   const [webActive, setWebActive] = useState<number | null>(null);
   const webSeq = useRef(0);
+  // Questions to the AI are asked on Enter, like provider web searches; the
+  // answer streams in under the bar.
+  const aiProvider = aiProviderOf(settings.ai.provider);
+  const aiModel = aiProvider ? (settings.ai.models[aiProvider.id] ?? "") : "";
+  const [aiState, setAiState] = useState<AiState | null>(null);
+  const aiSeq = useRef(0);
+  // Typing on hides the answer; an unfinished one stops, as it costs.
+  const aiShown = aiState && aiState.question === aiQuery ? aiState : null;
+  useEffect(() => {
+    if (aiState && aiState.question !== aiQuery && (aiState.phase === "reading" || aiState.phase === "streaming")) {
+      aiSeq.current++;
+      stopAi();
+      setAiState(null);
+    }
+  }, [aiQuery, aiState]);
   // The answer to the "=" calculation, shown after the text; for the
   // expression it was for, so typing on hides a stale one.
   const [calc, setCalc] = useState<{ expr: string; answer: string } | null>(null);
@@ -514,7 +562,8 @@ function App() {
     const seq = ++searchSeq.current;
     const web = webQueryOf(query, trigger) !== null;
     const inside = web ? null : contentQueryOf(query, contentTrigger);
-    const other = inside === null && (web || calcQueryOf(query) !== null || urlOf(query) !== null);
+    const ai = !web && inside === null && aiQueryOf(query, aiTrigger) !== null;
+    const other = inside === null && (web || ai || calcQueryOf(query) !== null || urlOf(query) !== null);
     // Inside files doesn't need the app's own index: Windows Search answers it.
     if ((!ready && inside === null) || !query.trim() || other || inside === "") {
       setSearchMs(null);
@@ -548,7 +597,7 @@ function App() {
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, ready, shownAt, maxResults, trigger, contentTrigger, imagesOn]);
+  }, [query, ready, shownAt, maxResults, trigger, contentTrigger, aiTrigger, imagesOn]);
 
   // Calculate as you type, without the search's pause: the backend gives up
   // on anything that takes over 100 ms. Only the newest answer is shown.
@@ -634,6 +683,48 @@ function App() {
         setWebActive(results.length ? 0 : null);
       })
       .catch((err: Error) => seq === webSeq.current && setWebState({ kind: "error", query: text, message: err.message }));
+  };
+
+  /** Asks the AI `question`, after searching the web for sources when the
+   *  settings say so and there's a provider to search with. */
+  const askQuestion = async (question: string) => {
+    if (!aiProvider || !question) return;
+    const id = ++aiSeq.current;
+    const update = (change: (s: AiState) => AiState) => setAiState((s) => (s && s.id === id ? change(s) : s));
+    setAiState({ id, question, phase: "reading", answer: "", sources: [] });
+    let sources: AiSource[] = [];
+    // Perplexity searches the web itself.
+    if (provider && settings.ai.web_sources && aiProvider.id !== "perplexity") {
+      // Without sources the AI still answers, from what it knows.
+      sources = await webSearch(provider.id, question).then((r) => r.slice(0, 6)).catch(() => []);
+      if (id !== aiSeq.current) return;
+      update((s) => ({ ...s, sources }));
+    }
+    try {
+      await askAi(
+        aiProvider.id,
+        aiModel,
+        question,
+        sources,
+        (text) => update((s) => ({ ...s, phase: "streaming", answer: s.answer + text })),
+        (found) => update((s) => ({ ...s, sources: found }))
+      );
+      update((s) => ({ ...s, phase: "done" }));
+    } catch (err) {
+      update((s) => ({ ...s, phase: "error", message: (err as Error).message }));
+    }
+  };
+
+  /** Enter on a question: asks it, unless its answer is already there or
+   *  coming. Without an AI chosen, opens the settings to choose one. */
+  const submitQuestion = () => {
+    if (!aiQuery) return;
+    if (!aiProvider) {
+      invoke("open_settings").catch((err) => console.error("Failed to open settings:", err));
+      return;
+    }
+    if (aiShown && aiShown.phase !== "error") return;
+    askQuestion(aiQuery);
   };
 
   /** Runs a recent web search again, as Enter on it would. */
@@ -737,6 +828,14 @@ function App() {
       }
       return;
     }
+    if (aiQuery !== null) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        submitQuestion();
+      }
+      return;
+    }
     if (webQuery !== null) {
       if (e.key === "Tab") {
         // Cycle the browser to search in; Shift+Tab goes back.
@@ -804,6 +903,10 @@ function App() {
       openTypedUrl();
       return;
     }
+    if (aiQuery !== null) {
+      submitQuestion();
+      return;
+    }
     if (webQuery !== null) {
       if (!webQuery) {
         if (showRecentWeb && recentWebActive !== null) runRecentWeb(recentWeb[recentWebActive]);
@@ -838,6 +941,7 @@ function App() {
   const showContentNotice = contentQuery !== null && !showResults && (contentQuery === "" || contentShown !== null);
   const showPanel =
     webQuery !== null ||
+    aiQuery !== null ||
     urlQuery !== null ||
     showResults ||
     showContentNotice ||
@@ -948,6 +1052,10 @@ function App() {
                 <span className="ml-1 flex h-4 items-center rounded-[5px] bg-emerald-950 px-1 text-[9px] leading-3 text-emerald-200/80 ring-1 ring-emerald-500/20">
                   Inside files
                 </span>
+              ) : aiQuery !== null ? (
+                <span className="ml-1 flex h-4 items-center rounded-[5px] bg-violet-950 px-1 text-[9px] leading-3 text-violet-200/80 ring-1 ring-violet-500/20">
+                  Ask {aiProvider ? aiProvider.short : "AI"}
+                </span>
               ) : (
                 // One pill per shortcut, each in its search's colour: red for
                 // the web, green for inside files.
@@ -959,6 +1067,10 @@ function App() {
                   <span className="flex h-4 items-center gap-0.5 rounded-[5px] bg-emerald-950 px-1 text-[9px] leading-3 text-emerald-200/80 ring-1 ring-emerald-500/20">
                     <span className="font-semibold text-emerald-300">{contentTrigger}</span>
                     inside files
+                  </span>
+                  <span className="flex h-4 items-center gap-0.5 rounded-[5px] bg-violet-950 px-1 text-[9px] leading-3 text-violet-200/80 ring-1 ring-violet-500/20">
+                    <span className="font-semibold text-violet-300">{aiTrigger}</span>
+                    ask AI
                   </span>
                 </span>
               )
@@ -1019,6 +1131,56 @@ function App() {
                 </button>
                 {browserMenu}
               </div>
+            ) : aiQuery !== null ? (
+              <>
+                <button
+                  type="button"
+                  onClick={submitQuestion}
+                  className="flex w-full min-w-0 items-center gap-2 p-3 text-left text-[12px] leading-4"
+                >
+                  {aiProvider ? (
+                    <>
+                      <AiBadge provider={aiProvider} />
+                      <span className="truncate">
+                        {aiQuery ? `Ask ${aiProvider.short} “${aiQuery}”` : `Type a question to ask ${aiProvider.short}`}
+                      </span>
+                      {aiQuery && !aiShown && <span className={cn(shortcutPill, "ml-auto shrink-0")}>Enter</span>}
+                    </>
+                  ) : (
+                    <span className="truncate text-zinc-400">Choose an AI to ask in Settings → API keys</span>
+                  )}
+                </button>
+                {aiShown && (
+                  <div className="border-t border-white/[0.06]">
+                    {aiShown.phase === "error" ? (
+                      <p role="alert" className="p-3 text-[12px] leading-4 text-zinc-400">
+                        {aiShown.message} <span className="text-zinc-500">
+                          <span className={shortcutPill}>Enter</span> asks again.
+                        </span>
+                      </p>
+                    ) : (
+                      <StreamedReply
+                        key={aiShown.id}
+                        answer={aiShown.answer}
+                        sources={aiShown.sources}
+                        status={aiShown.phase === "done" ? "done" : aiShown.phase === "streaming" ? "streaming" : "reading"}
+                        readingLabel={
+                          aiShown.sources.length
+                            ? `Reading ${aiShown.sources.length} ${aiShown.sources.length === 1 ? "source" : "sources"}…`
+                            : provider && settings.ai.web_sources && aiProvider?.id !== "perplexity"
+                              ? "Searching the web…"
+                              : "Thinking…"
+                        }
+                        // Less the question row and the actions under the answer.
+                        maxHeight={resultsMaxHeight(screenHeight) - WEB_ROW_HEIGHT - 36}
+                        footnote={aiProvider && (aiModel || aiProvider.model || aiProvider.name)}
+                        onRegenerate={() => askQuestion(aiShown.question)}
+                        onOpenSource={(src) => openUrl(src.url)}
+                      />
+                    )}
+                  </div>
+                )}
+              </>
             ) : webQuery !== null ? (
               <>
                 <div className="flex items-center gap-2 pr-2">

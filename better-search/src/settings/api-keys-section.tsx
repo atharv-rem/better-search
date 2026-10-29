@@ -11,16 +11,9 @@ import {
   TrashIcon,
 } from "@/lib/phosphor";
 import type { Settings } from "@/lib/settings";
-import {
-  describeUsage,
-  PROVIDERS,
-  useApiKeys,
-  useUsage,
-  type KeyStatus,
-  type Provider,
-  type ProviderId,
-} from "@/lib/web-search";
-import { ActionButton, Group, Row, Select } from "@/settings/controls";
+import { describeUsage, PROVIDERS, useApiKeys, useUsage, type KeyStatus, type ProviderId } from "@/lib/web-search";
+import { AI_KEY_PROVIDERS, AI_PROVIDERS, useAiKeys, useAiModels, type AiProvider, type AiProviderId } from "@/lib/ai";
+import { ActionButton, Group, Row, Select, Switch } from "@/settings/controls";
 import { shortcutPill } from "@/lib/surface-classes";
 import { keepOpenFor } from "@/settings/keep-open";
 import { cn } from "@/lib/utils";
@@ -38,6 +31,7 @@ export function ApiKeysSection({ settings, save }: { settings: Settings; save: S
   return (
     <>
       <Group
+        title="Web search"
         footer={
           withKey.length === 0
             ? "Add a key below to see web results right here instead of in your browser."
@@ -77,9 +71,129 @@ export function ApiKeysSection({ settings, save }: { settings: Settings; save: S
         </Row>
       </Group>
       <section className="flex flex-col gap-2">
-        <KeyEditor keys={keys} onSave={saveKey} onRemove={remove} />
+        <KeyEditor
+          title="Your web search keys"
+          providers={PROVIDERS}
+          keys={keys}
+          onSave={(id, key) => saveKey(id as ProviderId, key)}
+          onRemove={(id) => remove(id as ProviderId)}
+          usage
+          importPlaceholder={"# Paste KEY=value lines\nEXA_API_KEY=…\nFIRECRAWL_API_KEY=…"}
+        />
         <p className="px-1 text-[11px] leading-4 text-zinc-500">
           Keys are kept in Windows Credential Manager and only sent to their own provider. Saving a key runs one small search to check it.
+        </p>
+      </section>
+      <AiSection settings={settings} save={save} webProvider={withKey.find((p) => p.id === settings.web.provider)?.name ?? null} />
+    </>
+  );
+}
+
+/** An AI provider's logo, on the same white tile as the web results ones. */
+function AiBadge({ provider }: { provider: Pick<AiProvider, "logo"> }) {
+  return (
+    <span className="grid size-3.5 shrink-0 place-items-center rounded-[3px] bg-white">
+      <img src={provider.logo} alt="" className="size-2.5 object-contain" draggable={false} />
+    </span>
+  );
+}
+
+/** Which AI answers questions typed after "?", with which model, and the
+ *  keys for the providers that need one. */
+function AiSection({ settings, save, webProvider }: { settings: Settings; save: Save; webProvider: string | null }) {
+  const { keys, save: saveKey, remove } = useAiKeys();
+  const [error, setError] = useState<string | null>(null);
+  const { ai } = settings;
+  const usable = AI_PROVIDERS.filter((p) => p.local || keys?.some((k) => k.provider === p.id && k.hint));
+  const chosen = usable.find((p) => p.id === ai.provider) ?? null;
+  const models = useAiModels(chosen?.id ?? null, chosen !== null);
+  const savedModel = chosen ? (ai.models[chosen.id] ?? "") : "";
+  // The provider's models, with the saved one kept in case the list no
+  // longer has it (or couldn't be fetched); "" is the provider's default.
+  const modelOptions = [
+    { value: "", label: chosen?.model ? `Default (${chosen.model})` : "Default" },
+    ...[...(savedModel && !models?.list.includes(savedModel) ? [savedModel] : []), ...(models?.list ?? [])].map((m) => ({
+      value: m,
+      label: m,
+    })),
+  ];
+
+  const setAi = async (change: Partial<Settings["ai"]>) => setError(await save((s) => ({ ...s, ai: { ...s.ai, ...change } })));
+
+  const saveModel = (model: string) => {
+    if (!chosen || model === savedModel) return;
+    const next = { ...ai.models };
+    if (model) next[chosen.id] = model;
+    else delete next[chosen.id];
+    setAi({ models: next });
+  };
+
+  return (
+    <>
+      <Group
+        title="AI answers"
+        footer={
+          <>
+            Start a search with <span className={shortcutPill}>{ai.trigger}</span> and press <span className={shortcutPill}>Enter</span> to ask. Change the symbol in Shortcuts.
+          </>
+        }
+      >
+        <Row label="Answers from" description="The AI that answers your questions." error={error}>
+          <Select
+            label="Answers from"
+            value={chosen ? chosen.id : "off"}
+            options={[
+              { value: "off" as const, label: "Off" },
+              ...usable.map((p) => ({ value: p.id, label: p.local ? `${p.name} (on this PC)` : p.name, icon: <AiBadge provider={p} /> })),
+            ]}
+            onChange={(provider) => setAi({ provider: provider as AiProviderId | "off" })}
+          />
+        </Row>
+        {chosen && (
+          <Row
+            label="Model"
+            description={
+              models?.error
+                ? `Couldn't list the models: ${models.error}`
+                : models === null
+                  ? "Loading the models…"
+                  : chosen.model
+                    ? `Default uses ${chosen.model}.`
+                    : chosen.id === "openrouter"
+                      ? "Default uses the first free model OpenRouter lists."
+                      : `Default uses the first model ${chosen.name} has.`
+            }
+          >
+            <Select label="Model" value={savedModel} options={modelOptions} onChange={saveModel} alwaysBelow />
+          </Row>
+        )}
+        <Row
+          label="Read the web first"
+          description={
+            webProvider
+              ? `Search ${webProvider} for each question and answer from the results, with numbered sources you can hover. Uses a search's credits.`
+              : "Choose a web results provider above to answer from the web, with numbered sources."
+          }
+        >
+          <Switch
+            checked={ai.web_sources && webProvider !== null}
+            disabled={webProvider === null}
+            onChange={(web_sources) => setAi({ web_sources })}
+            label="Read the web first"
+          />
+        </Row>
+      </Group>
+      <section className="flex flex-col gap-2">
+        <KeyEditor
+          title="Your AI keys"
+          providers={AI_KEY_PROVIDERS}
+          keys={keys}
+          onSave={saveKey}
+          onRemove={remove}
+          importPlaceholder={"# Paste KEY=value lines\nOPENAI_API_KEY=…\nGEMINI_API_KEY=…"}
+        />
+        <p className="px-1 text-[11px] leading-4 text-zinc-500">
+          Providers marked free have a free tier with daily limits; some free tiers may use what you ask to train their models. Ollama and LM Studio run models on this PC and need no key. Saving a key checks it with the provider: for GitHub and Perplexity that's a one-word answer.
         </p>
       </section>
     </>
@@ -94,17 +208,30 @@ export function ApiKeysSection({ settings, save }: { settings: Settings; save: S
 /** An unsaved edit: a new key to save, or the saved one to remove. */
 type Change = { key: string } | { remove: true };
 
+/** A provider in a keys table: a web search one or an AI one. */
+interface KeyProvider {
+  id: string;
+  name: string;
+  keyUrl: string;
+  /** The variables a .env file keeps its key in. */
+  env: readonly string[];
+  /** Bundled, never fetched. */
+  logo: string;
+  /** Has a free tier. */
+  free?: boolean;
+}
+
 const MASK = "••••••••";
 
 /** The provider keys in a .env file's text, and how many lines weren't any. */
-function parseDotenv(text: string) {
-  const found = new Map<ProviderId, string>();
+function parseDotenv(text: string, providers: readonly KeyProvider[]) {
+  const found = new Map<string, string>();
   let skipped = 0;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const m = line.replace(/^export\s+/, "").match(/^([A-Za-z_]\w*)\s*=\s*(.*)$/);
-    const provider = m && PROVIDERS.find((p) => (p.env as readonly string[]).includes(m[1].toUpperCase()));
+    const provider = m && providers.find((p) => p.env.includes(m[1].toUpperCase()));
     let value = m?.[2].replace(/\s+#.*$/, "") ?? "";
     if (/^(["']).*\1$/.test(value)) value = value.slice(1, -1);
     if (provider && value) found.set(provider.id, value);
@@ -114,31 +241,40 @@ function parseDotenv(text: string) {
 }
 
 function KeyEditor({
+  title,
+  providers,
   keys,
   onSave,
   onRemove,
+  usage = false,
+  importPlaceholder,
 }: {
+  title: string;
+  providers: readonly KeyProvider[];
   /** Null while the keys load. */
   keys: KeyStatus[] | null;
-  onSave: (provider: ProviderId, key: string) => Promise<string | null>;
-  onRemove: (provider: ProviderId) => Promise<string | null>;
+  onSave: (provider: string, key: string) => Promise<string | null>;
+  onRemove: (provider: string) => Promise<string | null>;
+  /** Show what each saved key's account has used (web search providers). */
+  usage?: boolean;
+  importPlaceholder: string;
 }) {
-  const [changes, setChanges] = useState<Partial<Record<ProviderId, Change>>>({});
-  const [errors, setErrors] = useState<Partial<Record<ProviderId, string>>>({});
-  const [revealed, setRevealed] = useState<Set<ProviderId>>(new Set());
-  const [editing, setEditing] = useState<ProviderId | null>(null);
+  const [changes, setChanges] = useState<Partial<Record<string, Change>>>({});
+  const [errors, setErrors] = useState<Partial<Record<string, string>>>({});
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [saving, setSaving] = useState<"idle" | "saving" | "saved">("idle");
   const importBox = useRef<HTMLTextAreaElement>(null);
 
-  const hint = (id: ProviderId) => keys?.find((k) => k.provider === id)?.hint ?? null;
+  const hint = (id: string) => keys?.find((k) => k.provider === id)?.hint ?? null;
 
   const counts = useMemo(() => {
     let added = 0;
     let replaced = 0;
     let removed = 0;
-    for (const [id, c] of Object.entries(changes) as [ProviderId, Change][]) {
+    for (const [id, c] of Object.entries(changes) as [string, Change][]) {
       if ("remove" in c) removed++;
       else if (keys?.find((k) => k.provider === id)?.hint) replaced++;
       else added++;
@@ -156,15 +292,15 @@ function KeyEditor({
     return () => clearTimeout(t);
   }, [saving]);
 
-  const change = (id: ProviderId, c: Change | null) => {
+  const change = (id: string, c: Change | null) => {
     setChanges(({ [id]: _, ...rest }) => (c ? { ...rest, [id]: c } : rest));
     setErrors(({ [id]: _, ...rest }) => rest);
   };
 
-  const drafts = (Object.entries(changes) as [ProviderId, Change][]).filter(([, c]) => "key" in c).map(([id]) => id);
+  const drafts = (Object.entries(changes) as [string, Change][]).filter(([, c]) => "key" in c).map(([id]) => id);
   const allRevealed = drafts.length > 0 && drafts.every((id) => revealed.has(id));
 
-  const parsed = useMemo(() => parseDotenv(importText), [importText]);
+  const parsed = useMemo(() => parseDotenv(importText, providers), [importText, providers]);
 
   const applyImport = () => {
     for (const [id, key] of parsed.found) change(id, { key });
@@ -193,13 +329,13 @@ function KeyEditor({
     setSaving("saving");
     setEditing(null);
     const results = await Promise.all(
-      (Object.entries(changes) as [ProviderId, Change][]).map(async ([id, c]) =>
+      (Object.entries(changes) as [string, Change][]).map(async ([id, c]) =>
         [id, "remove" in c ? await onRemove(id) : await onSave(id, c.key)] as const
       )
     );
     const failed = results.filter(([, error]) => error);
     setChanges((cs) => Object.fromEntries(Object.entries(cs).filter(([id]) => failed.some(([f]) => f === id))));
-    setErrors(Object.fromEntries(failed));
+    setErrors(Object.fromEntries(failed) as Record<string, string>);
     setRevealed(new Set());
     setSaving(failed.length ? "idle" : "saved");
   };
@@ -261,9 +397,9 @@ function KeyEditor({
     >
       <div className="flex items-center gap-2 px-3.5 py-2.5">
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-[12px] leading-4 text-white">Your API keys</h2>
+          <h2 className="truncate text-[12px] leading-4 text-white">{title}</h2>
           <p className="truncate text-[11px] leading-4 text-zinc-500">
-            {keys ? `${saved} of ${PROVIDERS.length} saved` : "Loading…"} · paste a .env anywhere here
+            {keys ? `${saved} of ${providers.length} saved` : "Loading…"} · paste a .env anywhere here
           </p>
         </div>
         {drafts.length > 0 && (
@@ -287,7 +423,7 @@ function KeyEditor({
             aria-label="Paste .env contents"
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
-            placeholder={"# Paste KEY=value lines\nEXA_API_KEY=…\nFIRECRAWL_API_KEY=…"}
+            placeholder={importPlaceholder}
             spellCheck={false}
             className="h-20 w-full resize-none rounded-md bg-black px-2.5 py-2 font-mono text-[11px] leading-[18px] text-white outline-hidden ring-1 ring-white/[0.07] placeholder:text-zinc-600 focus:ring-[#6B97FF]"
           />
@@ -318,10 +454,11 @@ function KeyEditor({
           <div role="columnheader" className="px-3 py-1.5">Key</div>
           <div role="columnheader"><span className="sr-only">Actions</span></div>
         </div>
-        {PROVIDERS.map((p) => (
+        {providers.map((p) => (
           <KeyRow
             key={p.id}
             provider={p}
+            usage={usage}
             hint={keys ? hint(p.id) : undefined}
             change={changes[p.id]}
             error={errors[p.id]}
@@ -350,6 +487,7 @@ function KeyEditor({
 
 function KeyRow({
   provider,
+  usage: showUsage,
   hint,
   change,
   error,
@@ -360,7 +498,8 @@ function KeyRow({
   onChange,
   onToggleShown,
 }: {
-  provider: Provider;
+  provider: KeyProvider;
+  usage: boolean;
   /** The saved key's last four characters; undefined while the keys load. */
   hint: string | null | undefined;
   change: Change | undefined;
@@ -373,7 +512,7 @@ function KeyRow({
   onToggleShown: () => void;
 }) {
   const [draft, setDraft] = useState("");
-  const usage = useUsage(provider.id, hint);
+  const usage = useUsage(provider.id as ProviderId, showUsage ? hint : null);
   const removed = change !== undefined && "remove" in change;
   const value = change !== undefined && "key" in change ? change.key : null;
 
@@ -410,9 +549,16 @@ function KeyRow({
                 new
               </span>
             )}
+            {provider.free && (
+              <span className="shrink-0 rounded-full bg-sky-500/15 px-1.5 text-[10px] leading-4 font-medium text-sky-300">
+                free tier
+              </span>
+            )}
           </span>
           <span className="truncate text-[11px] leading-4 text-zinc-500">
-            {hint ? (
+            {hint && !showUsage ? (
+              "Saved"
+            ) : hint ? (
               usage === undefined ? (
                 <span className="mt-0.5 block h-3 w-40 animate-pulse rounded-sm bg-white/[0.06]" role="status" aria-label="Loading usage" />
               ) : usage.value ? (

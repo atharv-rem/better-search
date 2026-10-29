@@ -13,7 +13,7 @@ Better Search is a file search for Windows, made by Atharv Remeshan. It works on
 | The text in your images, if you turn on "Index text in images" (read by Windows' own text recognition, on this computer) | `images.db` next to the index | So content searches find screenshots and photos by their words. Off unless you turn it on; Settings can delete it |
 | Your settings (shortcut, excluded drives and folders, search options) | The app's data folder | To remember your choices |
 | Your recent searches | `recent.json` in the app's data folder | Listed under the empty search box. Turn this off in Settings and nothing is kept; the list can be cleared there too |
-| Web search API keys you add | Windows Credential Manager | So web search can sign in to the provider you chose |
+| Web search and AI API keys you add | Windows Credential Manager | So web search and AI answers can sign in to the provider you chose |
 | Web search usage counts | `usage.json` in the app's data folder | To show your remaining credits |
 | A log file | The app's log folder (Settings can open it) | To diagnose problems. It records app events, not your searches |
 
@@ -27,9 +27,10 @@ Reading each drive's file list directly needs administrator rights. Better Searc
 
 ## What leaves your computer
 
-Only when you use web search, and only as follows:
+Only when you use web search or ask AI, and only as follows:
 
 - **Web search with an API key.** If you add a key for Exa, Firecrawl, TinyFish or Context.dev, the text you type is sent to that provider, with your key, to fetch results. It is not sent to anyone else, and nothing is sent until you add a key. The provider's own privacy policy applies to what it receives.
+- **Asking AI.** When you press Enter on a question (`?` in the search bar), it is sent to the AI you chose in Settings (Google AI Studio, Groq, OpenRouter, GitHub Models, OpenAI, Claude, DeepSeek or Perplexity), with your key. If "Read the web first" is on, the question is also searched with your web search provider, and those results go to the AI with it. Nothing is sent until you choose an AI and press Enter. Some providers' free tiers may use what you send to train their models; their own privacy policies apply. Ollama and LM Studio run on your computer, so questions to them don't leave it.
 - **Result icons.** To show a site's icon beside a web result, the app asks that site directly for its favicon. The site can see your IP address, as with any request.
 - **Search in your browser.** Choosing Google, Bing, DuckDuckGo, Brave Search, Google AI Mode, ChatGPT, Claude, Perplexity or your own address opens that search in your default browser. Better Search sends nothing itself.
 - **Updates.** The Microsoft Store delivers updates. The app doesn't contact any server to check for them.

@@ -91,6 +91,15 @@
       nsExec::Exec 'cmdkey /delete:better-search/firecrawl'
       nsExec::Exec 'cmdkey /delete:better-search/tinyfish'
       nsExec::Exec 'cmdkey /delete:better-search/context'
+      ; AI providers' (ai.rs; Ollama and LM Studio have none).
+      nsExec::Exec 'cmdkey /delete:better-search/ai/google'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/groq'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/openrouter'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/github'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/openai'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/anthropic'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/deepseek'
+      nsExec::Exec 'cmdkey /delete:better-search/ai/perplexity'
 
       ; A search index moved to another drive (storage.rs). Only its own
       ; files, and the folder if that leaves it empty.

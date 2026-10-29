@@ -550,9 +550,10 @@ pub async fn api_usage(app: AppHandle, provider: String) -> Result<Usage, String
 }
 
 /// The keys in Credential Manager, as generic credentials named
-/// "better-search/<provider>".
+/// "better-search/<provider>" (AI providers' as "better-search/ai/<provider>",
+/// see ai.rs).
 #[cfg(windows)]
-mod vault {
+pub(crate) mod vault {
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Security::Credentials::{
         CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
@@ -601,7 +602,7 @@ mod vault {
 }
 
 #[cfg(not(windows))]
-mod vault {
+pub(crate) mod vault {
     pub fn read(_provider: &str) -> Option<String> {
         None
     }

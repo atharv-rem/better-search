@@ -19,7 +19,7 @@ interface WebResultsProps {
 }
 
 /** "github.com" for https://www.github.com/a/b. */
-function siteOf(url: string) {
+export function siteOf(url: string) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {
@@ -42,7 +42,7 @@ function loadFavicon(url: string) {
 }
 
 /** The site's favicon, or a globe until (or unless) it loads. */
-function Favicon({ url, size }: { url: string; size: number }) {
+export function Favicon({ url, size }: { url: string; size: number }) {
   const [loaded, setLoaded] = useState<{ url: string; icon: string | null } | null>(null);
   const [broken, setBroken] = useState(false);
   useEffect(() => {

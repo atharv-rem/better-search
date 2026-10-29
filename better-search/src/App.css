@@ -277,4 +277,44 @@
       opacity: 0;
     }
   }
+
+  /* The AI answer (streamed-reply.tsx): words fade in out of a blur, source
+     cards rise in one after another (each sets its animation-delay),
+     citation chips pop in, the caret pulses and "Reading…" shimmers. */
+  --animate-word-in: word-in 300ms ease-out both;
+  --animate-card-in: card-in 300ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  --animate-pop-in: pop-in 200ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  --animate-caret: caret 900ms ease-in-out infinite;
+  --animate-shimmer: shimmer 1.5s linear infinite;
+  @keyframes word-in {
+    from {
+      opacity: 0;
+      filter: blur(4px);
+    }
+  }
+  @keyframes card-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.97);
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.8);
+    }
+  }
+  @keyframes caret {
+    50% {
+      opacity: 0.25;
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0%;
+    }
+    to {
+      background-position: -100% 0%;
+    }
+  }
 }
