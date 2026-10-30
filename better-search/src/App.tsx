@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { SearchBox } from "@/components/search-box";
 import { PreviewPanel } from "@/components/preview-panel";
+import { trimPreviews } from "@/lib/preview";
 import { SearchResults } from "@/components/search-results";
 import { WebResults } from "@/components/web-results";
 import { StreamedReply } from "@/components/streamed-reply";
@@ -502,6 +503,7 @@ function App() {
       reshown.current = true;
       setShownAt(Date.now());
     });
+    const unlistenHidden = listen("search-hidden", trimPreviews);
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) focusSearch();
     });
@@ -510,6 +512,7 @@ function App() {
 
     return () => {
       unlistenShown.then((fn) => fn());
+      unlistenHidden.then((fn) => fn());
       unlistenFocus.then((fn) => fn());
     };
   }, []);

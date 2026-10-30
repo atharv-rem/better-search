@@ -34,7 +34,11 @@ pub enum DocxPreview {
 /// metafile, which a webview can't draw.
 fn saved_thumbnail(zip: &mut zip::ZipArchive<std::fs::File>) -> Option<String> {
     use base64::Engine;
-    let name = zip.file_names().find(|n| n.to_ascii_lowercase().starts_with("docprops/thumbnail."))?.to_string();
+    let name = zip
+        .file_names()
+        .filter_map(Result::ok)
+        .find(|n| n.to_ascii_lowercase().starts_with("docprops/thumbnail."))?
+        .to_string();
     let mut bytes = Vec::new();
     zip.by_name(&name).ok()?.take(MAX_THUMBNAIL_BYTES).read_to_end(&mut bytes).ok()?;
     let kind = match bytes.as_slice() {

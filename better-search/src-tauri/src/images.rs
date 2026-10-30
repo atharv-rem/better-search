@@ -98,6 +98,10 @@ pub fn start(app: &AppHandle) {
         let mut p = state.progress.lock().unwrap();
         p.running = false;
         let _ = app.emit("image-index-progress", p.clone());
+        drop(p);
+        // What the OCR engine and the backend's writes used would otherwise
+        // stay in memory until a window is next shown and hidden.
+        crate::idle_if_hidden(&app);
     });
 }
 

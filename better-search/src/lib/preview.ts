@@ -82,3 +82,14 @@ export function loadPreview(result: SearchResult, thumbSize: number) {
   }
   return preview;
 }
+
+/** The window was hidden: keep only the newest preview, the one it will
+ *  show again with the same search, and free the rest, which would otherwise
+ *  sit in the hidden page as decoded images. */
+export function trimPreviews() {
+  const old = [...cache.entries()].slice(0, -1);
+  for (const [key, evicted] of old) {
+    cache.delete(key);
+    evicted.then((p) => p.kind === "image" && revokeImage(p.url));
+  }
+}

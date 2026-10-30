@@ -42,7 +42,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "createUpdaterArtifacts": true,
     "publisher": "Atharv Remeshan",
     "copyright": "Copyright © 2026 Atharv Remeshan",

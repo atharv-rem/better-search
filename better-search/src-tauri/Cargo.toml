@@ -33,9 +33,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "que
 # ring for reqwest's TLS, as the updater does, rather than building aws-lc.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Shell icons, previews and web results' favicons as data URLs.
-base64 = "0.22"
+base64 = "0.23"
 # Reads .docx files (zips) for their preview; already pulled in by the updater.
-zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # The "=" calculator in the search box.
 fend-core = "1.5.9"
 
@@ -65,8 +65,16 @@ webview2-com = "0.39"
 windows-core = "0.62"
 # Private working set for the memory readout.
 windows = { version = "0.62", features = [
-    # First-page previews of PDFs, which Windows has no thumbnails for.
+    # First-page previews of PDFs, which Windows has no thumbnails for, drawn
+    # on Direct3D's software rasterizer (pdf_first_page).
     "Data_Pdf",
+    "Win32_System_WinRT_Pdf",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Foundation",
     # Reading the text in images for content search (images.rs): the OCR
     # engine, the decoder that hands it pixels, and the list of lines it reads.
@@ -93,7 +101,7 @@ windows = { version = "0.62", features = [
 ] }
 # Encodes shell icons; already pulled in by Tauri.
 png = "0.18"
-winreg = "0.55"
+winreg = "0.56"
 # Encodes preview thumbnails of photos, a fraction of their size as PNG.
 jpeg-encoder = "0.7.1"
 

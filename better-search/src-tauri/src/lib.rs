@@ -450,7 +450,8 @@ fn search_state(app: AppHandle) -> ShownState {
 
 /// Dismissing the search only hides the window, which is never destroyed, so
 /// Alt+S always reopens it instantly. Building it again would take WebView2
-/// ~0.5 s or more, to save only ~5-15 MB over the hidden, suspended window.
+/// ~0.5 s, losing the keys typed meanwhile and the last search, to save only
+/// ~10 MB over the hidden, suspended window.
 const SEARCH_LABEL: &str = "better-search";
 
 /// Builds the search window from its tauri.conf.json entry ("create": false:
@@ -485,8 +486,10 @@ fn open_search(app: &AppHandle, mode: Mode) {
 
 fn hide_search(window: &WebviewWindow) {
     let _ = window.hide();
-    // The settings and first-run windows show the index and can rebuild it.
     let app = window.app_handle();
+    // Before it's suspended: the page frees the previews it won't show again.
+    let _ = app.emit_to(SEARCH_LABEL, "search-hidden", ());
+    // The settings and first-run windows show the index and can rebuild it.
     if app.get_webview_window(SETTINGS_LABEL).is_none() && app.get_webview_window(ONBOARDING_LABEL).is_none() {
         went_idle(app);
     }
@@ -973,6 +976,14 @@ fn went_idle(app: &AppHandle) {
     });
 }
 
+/// Background work (reading images' text) finished while every window may be
+/// hidden: give back what it used, as hiding the last window does.
+pub(crate) fn idle_if_hidden(app: &AppHandle) {
+    if !app.webview_windows().values().any(|w| w.is_visible().unwrap_or(false)) {
+        went_idle(app);
+    }
+}
+
 /// 0 if the process has exited or can't be opened.
 #[cfg(windows)]
 fn private_working_set(pid: u32) -> u64 {
@@ -1217,45 +1228,119 @@ fn decoded_image(path: &str, size: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// A PDF's first page as a PNG, fitted within `size` × `size` physical
+/// A PDF's first page as a JPEG, fitted within `size` × `size` physical
 /// pixels, rendered by Windows' own PDF engine (Edge's). None for
 /// password-protected or broken files.
+///
+/// Drawn on WARP, Direct3D's software rasterizer, on a device made for this
+/// page and released with it. Left to itself the engine draws on the GPU,
+/// which loads the graphics driver and its shader compiler into this process:
+/// ~100 MB that stays for as long as the app runs.
 #[cfg(windows)]
 fn pdf_first_page(path: &str, size: u32) -> Option<Vec<u8>> {
-    use windows::core::HSTRING;
-    use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
-    use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+    use windows::core::{Interface, HSTRING};
+    use windows::Data::Pdf::PdfDocument;
     use windows::Storage::StorageFile;
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_COLOR_F, D2D_SIZE_U};
+    use windows::Win32::Graphics::Direct2D::{
+        D2D1CreateFactory, ID2D1Factory1, D2D1_BITMAP_OPTIONS, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+        D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_MAP_OPTIONS_READ,
+    };
+    use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
+    use windows::Win32::Graphics::Direct3D11::{D3D11CreateDevice, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION};
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+    use windows::Win32::Graphics::Dxgi::IDXGIDevice;
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    use windows::Win32::System::WinRT::Pdf::{PdfCreateRenderer, PDF_RENDER_PARAMS};
 
-    let render = || -> windows::core::Result<Vec<u8>> {
+    let render = || -> windows::core::Result<Option<Vec<u8>>> {
         let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))?.join()?;
         let page = PdfDocument::LoadFromFileAsync(&file)?.join()?.GetPage(0)?;
         let page_size = page.Size()?;
         let scale = size as f32 / page_size.Width.max(page_size.Height).max(1.0);
-        let options = PdfPageRenderOptions::new()?;
-        options.SetDestinationWidth((page_size.Width * scale).round().max(1.0) as u32)?;
-        options.SetDestinationHeight((page_size.Height * scale).round().max(1.0) as u32)?;
-        let stream = InMemoryRandomAccessStream::new()?;
-        page.RenderWithOptionsToStreamAsync(&stream, &options)?.join()?;
-        let len = stream.Size()? as u32;
-        let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
-        reader.LoadAsync(len)?.join()?;
-        let mut png = vec![0u8; len as usize];
-        reader.ReadBytes(&mut png)?;
-        Ok(png)
+        let width = (page_size.Width * scale).round().max(1.0) as u32;
+        let height = (page_size.Height * scale).round().max(1.0) as u32;
+
+        unsafe {
+            let mut device = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )?;
+            let dxgi: IDXGIDevice = device.ok_or_else(windows::core::Error::empty)?.cast()?;
+            let renderer = PdfCreateRenderer(&dxgi)?;
+            let factory: ID2D1Factory1 = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+            let context = factory.CreateDevice(&dxgi)?.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+
+            let bitmap = |options: D2D1_BITMAP_OPTIONS| {
+                let properties = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    bitmapOptions: options,
+                    ..Default::default()
+                };
+                context.CreateBitmap(D2D_SIZE_U { width, height }, None, 0, &properties)
+            };
+            let target = bitmap(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW)?;
+            context.SetTarget(&target);
+            context.BeginDraw();
+            // Drawn on a device context, the page's background color is left
+            // to the caller: pages that paint none would come out black.
+            let white = D2D_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+            context.Clear(Some(&white as *const _ as *const _));
+            let params = PDF_RENDER_PARAMS {
+                DestinationWidth: width,
+                DestinationHeight: height,
+                BackgroundColor: white,
+                ..Default::default()
+            };
+            let drawn = renderer.RenderPageToDeviceContext(&page, &context, Some(&params));
+            context.EndDraw(None, None)?;
+            drawn?;
+
+            // The target lives on the device; read it through a CPU copy.
+            let readable = bitmap(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW)?;
+            readable.CopyFromBitmap(None, &target, None)?;
+            let mapped = readable.Map(D2D1_MAP_OPTIONS_READ)?;
+            let row = width as usize * 4;
+            let mut bgra = Vec::with_capacity(row * height as usize);
+            for y in 0..height as usize {
+                bgra.extend_from_slice(std::slice::from_raw_parts(mapped.bits.add(y * mapped.pitch as usize), row));
+            }
+            readable.Unmap()?;
+
+            // The page is drawn on white, so it's opaque.
+            let mut jpeg = Vec::new();
+            let encoded = jpeg_encoder::Encoder::new(&mut jpeg, 85).encode(
+                &bgra,
+                width.try_into().unwrap_or(u16::MAX),
+                height.try_into().unwrap_or(u16::MAX),
+                jpeg_encoder::ColorType::Bgra,
+            );
+            Ok(encoded.ok().map(|_| jpeg))
+        }
     };
 
     unsafe {
-        // Multithreaded: waiting on the render (`join`) would block a
+        // Multithreaded: waiting on the load (`join`) would block a
         // single-threaded apartment's message loop. Each thumbnail call
         // uninitializes, so this thread has no apartment yet.
         let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-        let png = render();
+        let jpeg = render();
         if com {
             CoUninitialize();
         }
-        png.ok().filter(|png| !png.is_empty())
+        jpeg.ok().flatten().filter(|jpeg| !jpeg.is_empty())
     }
 }
 
