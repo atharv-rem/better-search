@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/atharv-rem/better-search/compare/v0.6.0...v0.6.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* enhance image handling and memory management during search window visibility ([a9abcf0](https://github.com/atharv-rem/better-search/commit/a9abcf05a63fa66e4d1e32f09cd10c51f1fe4719))
+
 ## [0.6.0](https://github.com/atharv-rem/better-search/compare/v0.5.0...v0.6.0) (2026-10-29)
 
 
